@@ -13,16 +13,18 @@ This document explains the current tokenizer system in this project.
   - camelCase split support
   - BPE merge training
   - `##` continuation tokens
-  - Binary metadata caching (`Metadata/bpe_model.bin`)
+  - Binary metadata caching (`Metadata/bpe_model_essay.bin`)
+  - Training corpus input supports `.txt` and `.csv` (`text` column for CSV)
 
 2. `SentencePiece`-style tokenizer
 - Files:
   - `libraries/NKS_Tokenizer/NKS_SentencePieceTokenizer.h`
   - `libraries/NKS_Tokenizer/NKS_SentencePieceTokenizer.cpp`
 - Features:
-  - whitespace marker based normalization (`?` internally)
+  - whitespace marker based normalization (`▁` internally)
   - UTF-8 aware segmentation
   - DP/Viterbi-like best-piece path selection
+  - Training corpus input supports `.txt` and `.csv` (`text` column for CSV)
 
 ## App Flow
 
@@ -35,16 +37,22 @@ This document explains the current tokenizer system in this project.
 flowchart TD
     A[Start App] --> B[Read mode + input text]
     B --> C{Mode}
-    C -->|bpe| D[Load Metadata/bpe_model.bin]
-    D -->|not found| E[Train BPE from Data/words.txt]
-    E --> F[Save Metadata/bpe_model.bin]
+    C -->|bpe| D[Load Metadata/bpe_model_essay.bin]
+    D -->|not found| E[Train BPE from Data/Training_Essay_Data.csv]
+    E --> F[Save Metadata/bpe_model_essay.bin]
     D --> G[Run BPE tokenize/encode/decode]
     F --> G
-    C -->|sentencepiece| H[Train SentencePiece from Data/words.txt]
+    C -->|sentencepiece| H[Train SentencePiece from Data/Training_Essay_Data.csv]
     H --> I[Run SentencePiece encode/decode]
     G --> J[Print summary]
     I --> J
 ```
+
+## Current Default Data Paths
+
+- Training corpus path: `Data/Training_Essay_Data.csv`
+- Converted text corpus file: `Data/Training_Essay_Data.txt`
+- Cached BPE metadata: `Metadata/bpe_model_essay.bin`
 
 ## Refactor Notes (Magic Number Cleanup)
 
@@ -79,7 +87,7 @@ The code now uses named structures/constants/enums instead of scattered literals
 
 ## Binary Metadata Format (BPE)
 
-Path: `Metadata/bpe_model.bin`
+Path: `Metadata/bpe_model_essay.bin`
 
 Stored data:
 1. magic header (`NKS_BPE1`)
@@ -110,7 +118,8 @@ function LoadOrTrainBPE(vocabPath, modelPath, cfg):
     if tokenizer.loadModel(modelPath):
         return tokenizer
 
-    words = ReadAndNormalize(vocabPath, limit=cfg.trainingWordLimit)
+    rows = ReadCorpus(vocabPath) // supports txt or csv(text column)
+    words = PreTokenizeAndNormalize(rows, limit=cfg.trainingWordLimit)
     tokenizer.trainBPE(words, mergeOps=cfg.mergeOps, showProgress=cfg.showProgress)
     tokenizer.rebuildVocabularyMaps()
     tokenizer.saveModel(modelPath)
@@ -162,7 +171,8 @@ function DecodeBPE(ids):
 
 ```text
 function TrainSentencePiece(corpusPath, cfg):
-    lines = ReadAndNormalize(corpusPath, limit=cfg.trainingLineLimit)
+    rows = ReadCorpus(corpusPath) // supports txt or csv(text column)
+    lines = Normalize(rows, limit=cfg.trainingLineLimit)
     seed = all UTF8 chars from lines
     add seed to vocabulary
 
@@ -177,7 +187,7 @@ function TrainSentencePiece(corpusPath, cfg):
 
 ```text
 function EncodeSentencePiece(text):
-    normalized = insert ? boundary markers + normalize case
+    normalized = insert ▁ boundary markers + normalize case
     chars = UTF8 split(normalized)
 
     dp[0] = 0, dp[i] = INF for i>0
