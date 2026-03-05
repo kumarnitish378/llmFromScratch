@@ -1,11 +1,124 @@
 #include "NKS_SentencePieceTokenizer.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <unordered_set>
 #include <utility>
+
+namespace {
+std::string toLowerCopy(const std::string& value) {
+    std::string out = value;
+    for (char& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return out;
+}
+
+bool isCsvPath(const std::string& path) {
+    const std::size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) {
+        return false;
+    }
+    return toLowerCopy(path.substr(dot)) == ".csv";
+}
+
+std::vector<std::string> parseCsvRow(const std::string& line) {
+    std::vector<std::string> fields;
+    std::string field;
+    bool inQuotes = false;
+
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const char ch = line[i];
+        if (ch == '"') {
+            if (inQuotes && i + 1 < line.size() && line[i + 1] == '"') {
+                field.push_back('"');
+                ++i;
+            } else {
+                inQuotes = !inQuotes;
+            }
+            continue;
+        }
+
+        if (ch == ',' && !inQuotes) {
+            fields.push_back(field);
+            field.clear();
+            continue;
+        }
+        field.push_back(ch);
+    }
+
+    fields.push_back(field);
+    return fields;
+}
+
+std::vector<std::string> loadCorpusRows(const std::string& path, std::size_t maxRows) {
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        return {};
+    }
+
+    std::vector<std::string> rows;
+    if (maxRows > 0) {
+        rows.reserve(maxRows);
+    }
+
+    if (!isCsvPath(path)) {
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty()) {
+                continue;
+            }
+            rows.push_back(line);
+            if (maxRows > 0 && rows.size() >= maxRows) {
+                break;
+            }
+        }
+        return rows;
+    }
+
+    std::string headerLine;
+    if (!std::getline(in, headerLine)) {
+        return rows;
+    }
+    const std::vector<std::string> header = parseCsvRow(headerLine);
+    std::size_t textColumn = 0;
+    bool foundTextColumn = false;
+    for (std::size_t i = 0; i < header.size(); ++i) {
+        if (toLowerCopy(header[i]) == "text") {
+            textColumn = i;
+            foundTextColumn = true;
+            break;
+        }
+    }
+
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        const std::vector<std::string> fields = parseCsvRow(line);
+        std::string text;
+        if (foundTextColumn && textColumn < fields.size()) {
+            text = fields[textColumn];
+        } else if (!fields.empty()) {
+            text = fields[0];
+        }
+
+        if (text.empty()) {
+            continue;
+        }
+        rows.push_back(text);
+        if (maxRows > 0 && rows.size() >= maxRows) {
+            break;
+        }
+    }
+
+    return rows;
+}
+} // namespace
 
 NKS_SentencePieceTokenizer::NKS_SentencePieceTokenizer() {
     resetVocabulary();
@@ -57,24 +170,24 @@ NKS_SentencePieceTokenizer& NKS_SentencePieceTokenizer::setTrainingConfig(const 
 }
 
 bool NKS_SentencePieceTokenizer::trainFromFile(const std::string& corpusPath) {
-    std::ifstream in(corpusPath);
-    if (!in.is_open()) {
+    const std::vector<std::string> corpusRows = loadCorpusRows(corpusPath, config_.trainingLineLimit);
+    if (corpusRows.empty()) {
         return false;
     }
 
     std::vector<std::string> corpusLines;
     corpusLines.reserve(config_.trainingLineLimit);
 
-    std::string line;
-    while (std::getline(in, line)) {
-        const std::string normalized = normalizeInputForTraining(line);
+    for (const std::string& row : corpusRows) {
+        const std::string normalized = normalizeInputForTraining(row);
         if (normalized.empty()) {
             continue;
         }
         corpusLines.push_back(normalized);
-        if (corpusLines.size() >= config_.trainingLineLimit) {
-            break;
-        }
+    }
+
+    if (corpusLines.empty()) {
+        return false;
     }
 
     resetVocabulary();

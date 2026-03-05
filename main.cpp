@@ -15,8 +15,8 @@
 
 namespace {
 struct AppPaths {
-    std::string vocabularyPath = "Data/words.txt";
-    std::string bpeModelPath = "Metadata/bpe_model.bin";
+    std::string vocabularyPath = "Data/Training_Essay_Data.csv";
+    std::string bpeModelPath = "Metadata/bpe_model_essay.bin";
 };
 
 struct BpeRuntimeConfig {

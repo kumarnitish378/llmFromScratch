@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 
@@ -30,6 +31,116 @@ bool endsWith(const std::string& value, const std::string& suffix) {
         return false;
     }
     return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin());
+}
+
+std::string toLowerCopy(const std::string& value) {
+    std::string out = value;
+    for (char& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return out;
+}
+
+bool isCsvPath(const std::string& path) {
+    const std::size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) {
+        return false;
+    }
+    return toLowerCopy(path.substr(dot)) == ".csv";
+}
+
+std::vector<std::string> parseCsvRow(const std::string& line) {
+    std::vector<std::string> fields;
+    std::string field;
+    bool inQuotes = false;
+
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const char ch = line[i];
+        if (ch == '"') {
+            if (inQuotes && i + 1 < line.size() && line[i + 1] == '"') {
+                field.push_back('"');
+                ++i;
+            } else {
+                inQuotes = !inQuotes;
+            }
+            continue;
+        }
+
+        if (ch == ',' && !inQuotes) {
+            fields.push_back(field);
+            field.clear();
+            continue;
+        }
+        field.push_back(ch);
+    }
+
+    fields.push_back(field);
+    return fields;
+}
+
+std::vector<std::string> loadCorpusRows(const std::string& path, std::size_t maxRows) {
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        return {};
+    }
+
+    std::vector<std::string> rows;
+    if (maxRows > 0) {
+        rows.reserve(maxRows);
+    }
+
+    if (!isCsvPath(path)) {
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty()) {
+                continue;
+            }
+            rows.push_back(line);
+            if (maxRows > 0 && rows.size() >= maxRows) {
+                break;
+            }
+        }
+        return rows;
+    }
+
+    std::string headerLine;
+    if (!std::getline(in, headerLine)) {
+        return rows;
+    }
+    const std::vector<std::string> header = parseCsvRow(headerLine);
+    std::size_t textColumn = 0;
+    bool foundTextColumn = false;
+    for (std::size_t i = 0; i < header.size(); ++i) {
+        if (toLowerCopy(header[i]) == "text") {
+            textColumn = i;
+            foundTextColumn = true;
+            break;
+        }
+    }
+
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        const std::vector<std::string> fields = parseCsvRow(line);
+        std::string text;
+        if (foundTextColumn && textColumn < fields.size()) {
+            text = fields[textColumn];
+        } else if (!fields.empty()) {
+            text = fields[0];
+        }
+
+        if (text.empty()) {
+            continue;
+        }
+        rows.push_back(text);
+        if (maxRows > 0 && rows.size() >= maxRows) {
+            break;
+        }
+    }
+
+    return rows;
 }
 } // namespace
 
@@ -108,29 +219,44 @@ NKS_Tokenizer& NKS_Tokenizer::setTrainingConfig(const BpeTrainingConfig& config)
 }
 
 bool NKS_Tokenizer::loadVocabulary(const std::string& vocabularyPath) {
-    std::ifstream inFile(vocabularyPath);
-    if (!inFile.is_open()) {
+    const std::vector<std::string> corpusRows = loadCorpusRows(
+        vocabularyPath,
+        trainingConfig_.trainingWordLimit == 0 ? 0 : trainingConfig_.trainingWordLimit);
+
+    if (corpusRows.empty()) {
         return false;
     }
 
     std::vector<std::string> words;
     words.reserve(trainingConfig_.trainingWordLimit);
 
-    std::string line;
-    while (std::getline(inFile, line)) {
-        const std::string token = normalizeToken(line, lowercase_);
-        if (token.empty()) {
-            continue;
-        }
+    for (const std::string& row : corpusRows) {
+        const std::vector<PreToken> preTokens = preTokenize(row);
+        for (const PreToken& token : preTokens) {
+            if (token.isPunctuation) {
+                continue;
+            }
+            const std::string normalized = normalizeToken(token.text, lowercase_);
+            if (normalized.empty()) {
+                continue;
+            }
 
-        words.push_back(token);
+            words.push_back(normalized);
+            if (trainingConfig_.showProgress && (words.size() % kProgressWordInterval == 0)) {
+                std::cout << "[BPE] Loaded " << words.size() << " training words..." << std::endl;
+            }
+
+            if (words.size() >= trainingConfig_.trainingWordLimit) {
+                break;
+            }
+        }
         if (words.size() >= trainingConfig_.trainingWordLimit) {
             break;
         }
+    }
 
-        if (trainingConfig_.showProgress && (words.size() % kProgressWordInterval == 0)) {
-            std::cout << "[BPE] Loaded " << words.size() << " training words..." << std::endl;
-        }
+    if (words.empty()) {
+        return false;
     }
 
     if (trainingConfig_.showProgress) {
