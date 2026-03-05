@@ -18,6 +18,9 @@ NKS_Tokenizer createTokenizer() {
         .setLowercase(true)
         .setSplitOnPunctuation(true)
         .setKeepPunctuation(true)
+        .setSplitCamelCase(true)
+        .setBpeMergeOps(600)
+        .setTrainingWordLimit(25000)
         .setPreserveUnknownTokens(true);
     return tokenizer;
 }
@@ -70,14 +73,26 @@ void printSummary(const NKS_Tokenizer& tokenizer, const std::string& inputText, 
     printTokenIds(result.tokenIds);
     std::cout << "Decoded text: " << result.decodedText << std::endl;
 }
+
+std::string readInputTextFromTerminal() {
+    std::cout << "Enter text to tokenize: ";
+    std::string inputText;
+    std::getline(std::cin, inputText);
+    return inputText;
+}
 } // namespace
 
 int main() {
     const std::string vocabularyPath = "Data/words.txt";
-    const std::string inputText = "Hello, tokenizer! C++ is fast. UTF-8 sample: namaste duniya.";
 
     NKS_Tokenizer tokenizer = createTokenizer();
     if (!loadVocabularyOrReport(tokenizer, vocabularyPath)) {
+        return 1;
+    }
+
+    const std::string inputText = readInputTextFromTerminal();
+    if (inputText.empty()) {
+        std::cerr << "No input provided." << std::endl;
         return 1;
     }
 

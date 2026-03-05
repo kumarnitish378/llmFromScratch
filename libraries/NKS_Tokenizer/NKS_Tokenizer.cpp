@@ -5,6 +5,30 @@
 #include <cmath>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
+#include <utility>
+
+namespace {
+struct PairHash {
+    std::size_t operator()(const std::pair<std::string, std::string>& p) const {
+        const std::size_t h1 = std::hash<std::string>{}(p.first);
+        const std::size_t h2 = std::hash<std::string>{}(p.second);
+        return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+    }
+};
+
+struct WordSymbols {
+    std::vector<std::string> symbols;
+    int freq;
+};
+
+bool endsWith(const std::string& value, const std::string& suffix) {
+    if (suffix.size() > value.size()) {
+        return false;
+    }
+    return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin());
+}
+} // namespace
 
 NKS_Tokenizer::NKS_Tokenizer() {
     idToToken_.push_back(unknownToken_);
@@ -32,6 +56,11 @@ NKS_Tokenizer& NKS_Tokenizer::setKeepPunctuation(bool enabled) {
     return *this;
 }
 
+NKS_Tokenizer& NKS_Tokenizer::setSplitCamelCase(bool enabled) {
+    splitCamelCase_ = enabled;
+    return *this;
+}
+
 NKS_Tokenizer& NKS_Tokenizer::setUnknownToken(const std::string& token) {
     const std::string candidate = normalizeToken(token, lowercase_);
     if (!candidate.empty()) {
@@ -45,20 +74,28 @@ NKS_Tokenizer& NKS_Tokenizer::setPreserveUnknownTokens(bool enabled) {
     return *this;
 }
 
+NKS_Tokenizer& NKS_Tokenizer::setBpeMergeOps(std::size_t mergeOps) {
+    if (mergeOps > 0) {
+        bpeMergeOps_ = mergeOps;
+    }
+    return *this;
+}
+
+NKS_Tokenizer& NKS_Tokenizer::setTrainingWordLimit(std::size_t maxWords) {
+    if (maxWords > 0) {
+        trainingWordLimit_ = maxWords;
+    }
+    return *this;
+}
+
 bool NKS_Tokenizer::loadVocabulary(const std::string& vocabularyPath) {
     std::ifstream inFile(vocabularyPath);
     if (!inFile.is_open()) {
         return false;
     }
 
-    tokenToId_.clear();
-    idToToken_.clear();
-    dynamicTokenToId_.clear();
-    dynamicIdToToken_.clear();
-
-    idToToken_.push_back(unknownToken_);
-    tokenToId_[unknownToken_] = 0;
-    unknownTokenId_ = 0;
+    std::vector<std::string> words;
+    words.reserve(trainingWordLimit_);
 
     std::string line;
     while (std::getline(inFile, line)) {
@@ -67,71 +104,49 @@ bool NKS_Tokenizer::loadVocabulary(const std::string& vocabularyPath) {
             continue;
         }
 
-        if (tokenToId_.find(token) != tokenToId_.end()) {
-            continue;
+        words.push_back(token);
+        if (words.size() >= trainingWordLimit_) {
+            break;
         }
-
-        const int tokenId = static_cast<int>(idToToken_.size());
-        idToToken_.push_back(token);
-        tokenToId_[token] = tokenId;
     }
 
+    trainBpe(words);
+    rebuildIdMapsFromSubwords();
+
+    dynamicTokenToId_.clear();
+    dynamicIdToToken_.clear();
     nextDynamicId_ = static_cast<int>(idToToken_.size());
     return true;
 }
 
 std::vector<std::string> NKS_Tokenizer::tokenize(const std::string& text) const {
-    std::vector<std::string> tokens;
-    const std::vector<Utf8Char> chars = splitUtf8Chars(text);
-    std::string currentToken;
+    std::vector<std::string> output;
+    const std::vector<PreToken> parts = preTokenize(text);
 
-    auto pushCurrentToken = [&]() {
-        if (currentToken.empty()) {
-            return;
-        }
-        const std::string normalized = normalizeToken(currentToken, lowercase_);
-        if (!normalized.empty()) {
-            tokens.push_back(normalized);
-        }
-        currentToken.clear();
-    };
-
-    for (const Utf8Char& ch : chars) {
-        if (isUnicodeWhitespace(ch.codepoint)) {
-            pushCurrentToken();
+    for (const PreToken& part : parts) {
+        if (part.text.empty()) {
             continue;
         }
 
-        if (splitOnPunctuation_ && isUnicodePunctuation(ch.codepoint)) {
-            pushCurrentToken();
-            if (keepPunctuation_) {
-                const std::string punctuationToken = normalizeToken(ch.bytes, lowercase_);
-                if (!punctuationToken.empty()) {
-                    tokens.push_back(punctuationToken);
-                }
-            }
+        if (part.isPunctuation) {
+            output.push_back(normalizeToken(part.text, lowercase_));
             continue;
         }
 
-        if (lowercase_ && ch.codepoint <= 127) {
-            currentToken.push_back(toLowerAscii(ch.bytes[0]));
-        } else {
-            currentToken.append(ch.bytes);
-        }
+        std::vector<std::string> pieces = subwordTokenizeWord(part.text);
+        output.insert(output.end(), pieces.begin(), pieces.end());
     }
 
-    pushCurrentToken();
-
-    return tokens;
+    return output;
 }
 
 std::vector<int> NKS_Tokenizer::encode(const std::string& text) {
+    const std::vector<std::string> pieces = tokenize(text);
     std::vector<int> tokenIds;
-    const std::vector<std::string> tokens = tokenize(text);
-    tokenIds.reserve(tokens.size());
+    tokenIds.reserve(pieces.size());
 
-    for (const std::string& token : tokens) {
-        const auto it = tokenToId_.find(token);
+    for (const std::string& piece : pieces) {
+        const auto it = tokenToId_.find(piece);
         if (it != tokenToId_.end()) {
             tokenIds.push_back(it->second);
             continue;
@@ -142,16 +157,16 @@ std::vector<int> NKS_Tokenizer::encode(const std::string& text) {
             continue;
         }
 
-        const auto dynamicIt = dynamicTokenToId_.find(token);
-        if (dynamicIt != dynamicTokenToId_.end()) {
-            tokenIds.push_back(dynamicIt->second);
+        const auto dyn = dynamicTokenToId_.find(piece);
+        if (dyn != dynamicTokenToId_.end()) {
+            tokenIds.push_back(dyn->second);
             continue;
         }
 
-        const int newDynamicId = nextDynamicId_++;
-        dynamicTokenToId_[token] = newDynamicId;
-        dynamicIdToToken_[newDynamicId] = token;
-        tokenIds.push_back(newDynamicId);
+        const int newId = nextDynamicId_++;
+        dynamicTokenToId_[piece] = newId;
+        dynamicIdToToken_[newId] = piece;
+        tokenIds.push_back(newId);
     }
 
     return tokenIds;
@@ -159,36 +174,35 @@ std::vector<int> NKS_Tokenizer::encode(const std::string& text) {
 
 std::string NKS_Tokenizer::decode(const std::vector<int>& tokenIds) const {
     std::ostringstream oss;
-    bool prevIsConnectorPunctuation = false;
+    bool isStart = true;
 
-    for (std::size_t i = 0; i < tokenIds.size(); ++i) {
-        const int id = tokenIds[i];
-        std::string token = idToToken_[unknownTokenId_];
+    for (int id : tokenIds) {
+        std::string token = unknownToken_;
+
         if (id >= 0 && static_cast<std::size_t>(id) < idToToken_.size()) {
             token = idToToken_[id];
         } else {
-            const auto dynamicIt = dynamicIdToToken_.find(id);
-            if (dynamicIt != dynamicIdToToken_.end()) {
-                token = dynamicIt->second;
+            const auto dyn = dynamicIdToToken_.find(id);
+            if (dyn != dynamicIdToToken_.end()) {
+                token = dyn->second;
             }
         }
 
-        bool isSinglePunctuation = false;
-        bool isConnectorPunctuation = false;
-        if (!token.empty()) {
-            const std::vector<Utf8Char> chars = splitUtf8Chars(token);
-            if (chars.size() == 1 && isUnicodePunctuation(chars[0].codepoint)) {
-                isSinglePunctuation = true;
-                const std::string& punct = chars[0].bytes;
-                isConnectorPunctuation = (punct == "-" || punct == "'" || punct == "/" || punct == "_");
-            }
+        const bool isContinuation = token.rfind("##", 0) == 0;
+        const std::string clean = isContinuation ? token.substr(2) : token;
+        const bool isPunctuation = splitUtf8Chars(clean).size() == 1 && isUnicodePunctuation(splitUtf8Chars(clean)[0].codepoint);
+
+        if (isStart) {
+            oss << clean;
+            isStart = false;
+            continue;
         }
 
-        if (i > 0 && !isSinglePunctuation && !prevIsConnectorPunctuation) {
-            oss << ' ';
+        if (isContinuation || isPunctuation || isConnectorPunctuation(clean)) {
+            oss << clean;
+        } else {
+            oss << ' ' << clean;
         }
-        oss << token;
-        prevIsConnectorPunctuation = isConnectorPunctuation;
     }
 
     return oss.str();
@@ -199,7 +213,6 @@ std::size_t NKS_Tokenizer::vocabularySize() const {
 }
 
 std::size_t NKS_Tokenizer::estimateModelTokensApprox(const std::string& text) const {
-    // Practical estimate from OpenAI guidance: ~1 token ~= 4 English chars.
     return static_cast<std::size_t>(std::ceil(static_cast<double>(text.size()) / 4.0));
 }
 
@@ -278,14 +291,265 @@ bool NKS_Tokenizer::isUnicodePunctuation(uint32_t cp) {
     return false;
 }
 
-bool NKS_Tokenizer::isAsciiAlphaNum(uint32_t cp) {
-    return cp <= 127 && (std::isalnum(static_cast<unsigned char>(cp)) != 0);
+bool NKS_Tokenizer::isAsciiLower(uint32_t cp) {
+    return cp >= 'a' && cp <= 'z';
+}
+
+bool NKS_Tokenizer::isAsciiUpper(uint32_t cp) {
+    return cp >= 'A' && cp <= 'Z';
 }
 
 char NKS_Tokenizer::toLowerAscii(char c) {
     return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 }
 
-bool NKS_Tokenizer::isSpecialToken(const std::string& token) const {
-    return !token.empty() && tokenToId_.find(token) != tokenToId_.end();
+std::size_t NKS_Tokenizer::utf8CharCount(const std::string& text) {
+    return splitUtf8Chars(text).size();
+}
+
+std::vector<NKS_Tokenizer::PreToken> NKS_Tokenizer::preTokenize(const std::string& text) const {
+    std::vector<PreToken> out;
+    std::vector<Utf8Char> chars = splitUtf8Chars(text);
+
+    std::string current;
+    uint32_t prevCp = 0;
+    bool hasPrev = false;
+
+    auto flushWord = [&]() {
+        if (current.empty()) {
+            return;
+        }
+        out.push_back({current, false});
+        current.clear();
+        hasPrev = false;
+    };
+
+    for (const Utf8Char& ch : chars) {
+        if (isUnicodeWhitespace(ch.codepoint)) {
+            flushWord();
+            continue;
+        }
+
+        if (splitOnPunctuation_ && isUnicodePunctuation(ch.codepoint)) {
+            flushWord();
+            if (keepPunctuation_) {
+                out.push_back({ch.bytes, true});
+            }
+            continue;
+        }
+
+        if (splitCamelCase_ && hasPrev && isAsciiLower(prevCp) && isAsciiUpper(ch.codepoint)) {
+            flushWord();
+        }
+
+        current.append(ch.bytes);
+        prevCp = ch.codepoint;
+        hasPrev = true;
+    }
+
+    flushWord();
+    return out;
+}
+
+std::vector<std::string> NKS_Tokenizer::subwordTokenizeWord(const std::string& word) const {
+    std::vector<std::string> pieces;
+    const std::string normalized = normalizeToken(word, lowercase_);
+    if (normalized.empty()) {
+        return pieces;
+    }
+
+    const std::vector<Utf8Char> chars = splitUtf8Chars(normalized);
+    if (chars.empty()) {
+        return pieces;
+    }
+
+    std::size_t index = 0;
+    bool isFirst = true;
+
+    while (index < chars.size()) {
+        std::string matched;
+        std::size_t matchedLen = 0;
+
+        const std::size_t maxLen = std::min(maxSubwordChars_, chars.size() - index);
+        for (std::size_t len = maxLen; len >= 1; --len) {
+            std::string candidate;
+            for (std::size_t k = 0; k < len; ++k) {
+                candidate.append(chars[index + k].bytes);
+            }
+
+            if (subwordVocab_.find(candidate) != subwordVocab_.end()) {
+                matched = candidate;
+                matchedLen = len;
+                break;
+            }
+
+            if (len == 1) {
+                break;
+            }
+        }
+
+        if (matched.empty()) {
+            matched = chars[index].bytes;
+            matchedLen = 1;
+        }
+
+        if (!isFirst) {
+            matched = "##" + matched;
+        }
+
+        pieces.push_back(matched);
+        index += matchedLen;
+        isFirst = false;
+    }
+
+    return pieces;
+}
+
+void NKS_Tokenizer::trainBpe(const std::vector<std::string>& words) {
+    std::unordered_map<std::string, int> wordFreq;
+    for (const std::string& w : words) {
+        ++wordFreq[w];
+    }
+
+    std::vector<WordSymbols> corpus;
+    corpus.reserve(wordFreq.size());
+
+    subwordVocab_.clear();
+    maxSubwordChars_ = 1;
+
+    for (const auto& it : wordFreq) {
+        const std::vector<Utf8Char> chars = splitUtf8Chars(it.first);
+        if (chars.empty()) {
+            continue;
+        }
+
+        WordSymbols ws;
+        ws.freq = it.second;
+        ws.symbols.reserve(chars.size() + 1);
+        for (const Utf8Char& ch : chars) {
+            ws.symbols.push_back(ch.bytes);
+            subwordVocab_.insert(ch.bytes);
+        }
+        ws.symbols.push_back("</w>");
+        corpus.push_back(std::move(ws));
+    }
+
+    for (std::size_t step = 0; step < bpeMergeOps_; ++step) {
+        std::unordered_map<std::pair<std::string, std::string>, int, PairHash> pairCounts;
+
+        for (const WordSymbols& ws : corpus) {
+            if (ws.symbols.size() < 2) {
+                continue;
+            }
+            for (std::size_t i = 0; i + 1 < ws.symbols.size(); ++i) {
+                ++pairCounts[{ws.symbols[i], ws.symbols[i + 1]}];
+            }
+        }
+
+        int bestCount = 0;
+        std::pair<std::string, std::string> bestPair;
+        bool found = false;
+
+        for (const auto& kv : pairCounts) {
+            if (kv.second > bestCount) {
+                bestCount = kv.second;
+                bestPair = kv.first;
+                found = true;
+            }
+        }
+
+        if (!found || bestCount < 2) {
+            break;
+        }
+
+        const std::string merged = bestPair.first + bestPair.second;
+
+        for (WordSymbols& ws : corpus) {
+            if (ws.symbols.size() < 2) {
+                continue;
+            }
+
+            std::vector<std::string> mergedSymbols;
+            mergedSymbols.reserve(ws.symbols.size());
+
+            std::size_t i = 0;
+            while (i < ws.symbols.size()) {
+                if (i + 1 < ws.symbols.size() && ws.symbols[i] == bestPair.first && ws.symbols[i + 1] == bestPair.second) {
+                    mergedSymbols.push_back(merged);
+                    i += 2;
+                } else {
+                    mergedSymbols.push_back(ws.symbols[i]);
+                    ++i;
+                }
+            }
+
+            ws.symbols = std::move(mergedSymbols);
+        }
+    }
+
+    for (const WordSymbols& ws : corpus) {
+        for (const std::string& sym : ws.symbols) {
+            if (sym == "</w>") {
+                continue;
+            }
+
+            std::string normalizedSymbol = sym;
+            if (endsWith(normalizedSymbol, "</w>")) {
+                normalizedSymbol = normalizedSymbol.substr(0, normalizedSymbol.size() - 4);
+            }
+
+            if (normalizedSymbol.empty()) {
+                continue;
+            }
+
+            subwordVocab_.insert(normalizedSymbol);
+            maxSubwordChars_ = std::max(maxSubwordChars_, utf8CharCount(normalizedSymbol));
+        }
+    }
+}
+
+void NKS_Tokenizer::rebuildIdMapsFromSubwords() {
+    tokenToId_.clear();
+    idToToken_.clear();
+
+    idToToken_.push_back(unknownToken_);
+    tokenToId_[unknownToken_] = 0;
+    unknownTokenId_ = 0;
+
+    std::vector<std::string> sorted(subwordVocab_.begin(), subwordVocab_.end());
+    std::sort(sorted.begin(), sorted.end(), [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) {
+            return a.size() > b.size();
+        }
+        return a < b;
+    });
+
+    for (const std::string& s : sorted) {
+        if (tokenToId_.find(s) == tokenToId_.end()) {
+            const int id = static_cast<int>(idToToken_.size());
+            idToToken_.push_back(s);
+            tokenToId_[s] = id;
+        }
+
+        const std::string continuation = "##" + s;
+        if (tokenToId_.find(continuation) == tokenToId_.end()) {
+            const int id = static_cast<int>(idToToken_.size());
+            idToToken_.push_back(continuation);
+            tokenToId_[continuation] = id;
+        }
+    }
+
+    const std::string punct = ".,!?:;()[]{}<>-_/+'\"";
+    for (char c : punct) {
+        std::string p(1, c);
+        if (tokenToId_.find(p) == tokenToId_.end()) {
+            const int id = static_cast<int>(idToToken_.size());
+            idToToken_.push_back(p);
+            tokenToId_[p] = id;
+        }
+    }
+}
+
+bool NKS_Tokenizer::isConnectorPunctuation(const std::string& token) const {
+    return token == "-" || token == "_" || token == "/" || token == "'";
 }
