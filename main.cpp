@@ -3,10 +3,42 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
 #include "libraries/NKS_Tokenizer/NKS_SentencePieceTokenizer.h"
 #include "libraries/NKS_Tokenizer/NKS_Tokenizer.h"
 
 namespace {
+struct AppPaths {
+    std::string vocabularyPath = "Data/words.txt";
+    std::string bpeModelPath = "Metadata/bpe_model.bin";
+};
+
+struct BpeRuntimeConfig {
+    std::size_t mergeOps = 600;
+    std::size_t trainingWordLimit = 25000;
+    bool showTrainingProgress = true;
+};
+
+struct SentencePieceRuntimeConfig {
+    std::size_t targetVocabSize = 2000;
+    std::size_t maxPieceChars = 8;
+    std::size_t trainingLineLimit = 25000;
+};
+
+enum class TokenizerMode {
+    kBpe,
+    kSentencePiece,
+    kUnsupported
+};
+
+constexpr double kApproxCharsPerToken = 4.0;
+
 std::string formatPieceForTerminal(const std::string& piece) {
     const std::string marker = "\xE2\x96\x81"; // ▁
     std::string out = piece;
@@ -23,6 +55,18 @@ std::string formatPieceForTerminal(const std::string& piece) {
 
 std::vector<std::string> buildDisplayPieces(const std::vector<std::string>& pieces) {
     const std::string marker = "\xE2\x96\x81"; // ▁
+    bool hasSentencePieceMarker = false;
+    for (const std::string& piece : pieces) {
+        if (piece.find(marker) != std::string::npos) {
+            hasSentencePieceMarker = true;
+            break;
+        }
+    }
+
+    if (!hasSentencePieceMarker) {
+        return pieces;
+    }
+
     std::vector<std::string> display;
     std::string current;
 
@@ -64,35 +108,70 @@ struct TokenizationResult {
 };
 
 NKS_Tokenizer createBpeTokenizer() {
+    const BpeRuntimeConfig cfg;
     NKS_Tokenizer tokenizer;
+    NKS_Tokenizer::BpeTrainingConfig trainingCfg;
+    trainingCfg.mergeOps = cfg.mergeOps;
+    trainingCfg.trainingWordLimit = cfg.trainingWordLimit;
+    trainingCfg.showProgress = cfg.showTrainingProgress;
+
     tokenizer
         .setLowercase(true)
         .setSplitOnPunctuation(true)
         .setKeepPunctuation(true)
         .setSplitCamelCase(true)
-        .setBpeMergeOps(600)
-        .setTrainingWordLimit(25000)
+        .setTrainingConfig(trainingCfg)
         .setPreserveUnknownTokens(true);
     return tokenizer;
 }
 
 NKS_SentencePieceTokenizer createSentencePieceTokenizer() {
+    const SentencePieceRuntimeConfig cfg;
     NKS_SentencePieceTokenizer tokenizer;
+    NKS_SentencePieceTokenizer::TrainingConfig trainingCfg;
+    trainingCfg.lowercase = true;
+    trainingCfg.splitCamelCase = true;
+    trainingCfg.targetVocabSize = cfg.targetVocabSize;
+    trainingCfg.maxPieceChars = cfg.maxPieceChars;
+    trainingCfg.trainingLineLimit = cfg.trainingLineLimit;
+
     tokenizer
-        .setLowercase(true)
-        .setSplitCamelCase(true)
-        .setTargetVocabSize(2000)
-        .setMaxPieceChars(8)
-        .setTrainingLineLimit(25000);
+        .setTrainingConfig(trainingCfg);
     return tokenizer;
 }
 
-bool loadBpeVocabularyOrReport(NKS_Tokenizer& tokenizer, const std::string& vocabularyPath) {
-    if (tokenizer.loadVocabulary(vocabularyPath)) {
+bool loadOrTrainBpeModelOrReport(
+    NKS_Tokenizer& tokenizer,
+    const std::string& vocabularyPath,
+    const std::string& modelPath) {
+    if (tokenizer.loadModel(modelPath)) {
+        std::cout << "Loaded BPE model from metadata: " << modelPath << std::endl;
         return true;
     }
-    std::cerr << "Failed to load BPE vocabulary file: " << vocabularyPath << std::endl;
-    return false;
+
+    std::cout << "Metadata model not found/invalid. Training BPE model..." << std::endl;
+    if (!tokenizer.loadVocabulary(vocabularyPath)) {
+        std::cerr << "Failed to train BPE model from vocabulary file: " << vocabularyPath << std::endl;
+        return false;
+    }
+
+    const std::size_t pos = modelPath.find_last_of("/\\");
+    if (pos != std::string::npos) {
+        const std::string directory = modelPath.substr(0, pos);
+#ifdef _WIN32
+        _mkdir(directory.c_str());
+#else
+        mkdir(directory.c_str(), 0755);
+#endif
+    }
+
+    if (tokenizer.saveModel(modelPath)) {
+        std::cout << "Saved BPE model metadata: " << modelPath << std::endl;
+    } else {
+        std::cerr << "Warning: failed to save BPE model metadata to " << modelPath << std::endl;
+    }
+
+    return true;
 }
 
 bool trainSentencePieceOrReport(NKS_SentencePieceTokenizer& tokenizer, const std::string& corpusPath) {
@@ -118,7 +197,7 @@ TokenizationResult runSentencePiecePipeline(const NKS_SentencePieceTokenizer& to
     result.pieces = tokenizer.encode(text);
     result.tokenIds = tokenizer.encodeToIds(text);
     result.decodedText = tokenizer.decode(result.pieces);
-    result.approxModelTokenCount = static_cast<std::size_t>(std::ceil(static_cast<double>(text.size()) / 4.0));
+    result.approxModelTokenCount = static_cast<std::size_t>(std::ceil(static_cast<double>(text.size()) / kApproxCharsPerToken));
     result.vocabularySize = tokenizer.vocabularySize();
     return result;
 }
@@ -156,12 +235,12 @@ void printSummary(const std::string& mode, const std::string& inputText, const T
     std::cout << "Decoded text: " << result.decodedText << std::endl;
 }
 
-std::string readTokenizerMode() {
+TokenizerMode parseTokenizerMode() {
     std::cout << "Choose tokenizer mode [bpe/sentencepiece] (default=bpe): ";
     std::string mode;
     std::getline(std::cin, mode);
     if (mode.empty()) {
-        return "bpe";
+        return TokenizerMode::kBpe;
     }
 
     for (char& c : mode) {
@@ -169,9 +248,15 @@ std::string readTokenizerMode() {
     }
 
     if (mode == "sp") {
-        return "sentencepiece";
+        return TokenizerMode::kSentencePiece;
     }
-    return mode;
+    if (mode == "sentencepiece") {
+        return TokenizerMode::kSentencePiece;
+    }
+    if (mode == "bpe") {
+        return TokenizerMode::kBpe;
+    }
+    return TokenizerMode::kUnsupported;
 }
 
 std::string readInputTextFromTerminal() {
@@ -183,18 +268,18 @@ std::string readInputTextFromTerminal() {
 } // namespace
 
 int main() {
-    const std::string dataPath = "Data/words.txt";
+    const AppPaths paths;
 
-    const std::string mode = readTokenizerMode();
+    const TokenizerMode mode = parseTokenizerMode();
     const std::string inputText = readInputTextFromTerminal();
     if (inputText.empty()) {
         std::cerr << "No input provided." << std::endl;
         return 1;
     }
 
-    if (mode == "bpe") {
+    if (mode == TokenizerMode::kBpe) {
         NKS_Tokenizer tokenizer = createBpeTokenizer();
-        if (!loadBpeVocabularyOrReport(tokenizer, dataPath)) {
+        if (!loadOrTrainBpeModelOrReport(tokenizer, paths.vocabularyPath, paths.bpeModelPath)) {
             return 1;
         }
 
@@ -203,9 +288,9 @@ int main() {
         return 0;
     }
 
-    if (mode == "sentencepiece") {
+    if (mode == TokenizerMode::kSentencePiece) {
         NKS_SentencePieceTokenizer tokenizer = createSentencePieceTokenizer();
-        if (!trainSentencePieceOrReport(tokenizer, dataPath)) {
+        if (!trainSentencePieceOrReport(tokenizer, paths.vocabularyPath)) {
             return 1;
         }
 
@@ -214,6 +299,6 @@ int main() {
         return 0;
     }
 
-    std::cerr << "Unsupported mode: " << mode << ". Use 'bpe' or 'sentencepiece'." << std::endl;
+    std::cerr << "Unsupported mode. Use 'bpe' or 'sentencepiece'." << std::endl;
     return 1;
 }

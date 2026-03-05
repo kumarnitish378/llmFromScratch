@@ -1,150 +1,206 @@
 # Tokenization Working Documentation
 
-This document explains how tokenization currently works in this project (`libraries/NKS_Tokenizer`).
+This document explains the current tokenizer system in this project.
 
-## Overview
+## Implemented Tokenizers
 
-The tokenizer is a **BPE-style subword tokenizer** with:
-- UTF-8-aware text handling
-- Pre-tokenization (whitespace, punctuation, camelCase split)
-- BPE training from `Data/words.txt`
-- Greedy longest-match subword encoding
-- `##` continuation markers for non-initial subwords
+1. `BPE` tokenizer
+- Files:
+  - `libraries/NKS_Tokenizer/NKS_Tokenizer.h`
+  - `libraries/NKS_Tokenizer/NKS_Tokenizer.cpp`
+- Features:
+  - UTF-8 aware pre-tokenization
+  - camelCase split support
+  - BPE merge training
+  - `##` continuation tokens
+  - Binary metadata caching (`Metadata/bpe_model.bin`)
 
-Core files:
-- `libraries/NKS_Tokenizer/NKS_Tokenizer.h`
-- `libraries/NKS_Tokenizer/NKS_Tokenizer.cpp`
-- `main.cpp`
+2. `SentencePiece`-style tokenizer
+- Files:
+  - `libraries/NKS_Tokenizer/NKS_SentencePieceTokenizer.h`
+  - `libraries/NKS_Tokenizer/NKS_SentencePieceTokenizer.cpp`
+- Features:
+  - whitespace marker based normalization (`?` internally)
+  - UTF-8 aware segmentation
+  - DP/Viterbi-like best-piece path selection
 
-## High-Level Flow
+## App Flow
+
+- File: `main.cpp`
+- Mode selection at runtime:
+  - `bpe`
+  - `sentencepiece`
 
 ```mermaid
 flowchart TD
-    A[Load vocabulary file Data/words.txt] --> B[Normalize words]
-    B --> C[Build word frequency table]
-    C --> D[Initialize symbol corpus at char level]
-    D --> E[Run BPE merge iterations]
-    E --> F[Build subword vocabulary]
-    F --> G[Rebuild token-to-id maps]
-    G --> H[Read user input text]
-    H --> I[Pre-tokenize text]
-    I --> J[Split words into subwords\n(greedy longest match)]
-    J --> K[Map pieces to token IDs]
-    K --> L[Decode token IDs back to text]
-    L --> M[Print pieces, IDs, decoded text]
+    A[Start App] --> B[Read mode + input text]
+    B --> C{Mode}
+    C -->|bpe| D[Load Metadata/bpe_model.bin]
+    D -->|not found| E[Train BPE from Data/words.txt]
+    E --> F[Save Metadata/bpe_model.bin]
+    D --> G[Run BPE tokenize/encode/decode]
+    F --> G
+    C -->|sentencepiece| H[Train SentencePiece from Data/words.txt]
+    H --> I[Run SentencePiece encode/decode]
+    G --> J[Print summary]
+    I --> J
 ```
 
-## Detailed Pipeline
+## Refactor Notes (Magic Number Cleanup)
 
-### 1. Vocabulary Loading and Training
+The code now uses named structures/constants/enums instead of scattered literals.
 
-Entry point: `loadVocabulary(vocabularyPath)`
+### BPE
+- `BpeTrainingConfig` (in `NKS_Tokenizer`)
+  - `mergeOps`
+  - `trainingWordLimit`
+  - `showProgress`
+- `TrainingStage` enum added for stage semantics.
+- Named constants for:
+  - progress intervals
+  - approximate token estimation ratio
+  - continuation prefix and boundary markers
+  - minimum thresholds
 
-Steps:
-1. Read lines from `Data/words.txt`.
-2. Normalize tokens (trim/control-char cleanup, lowercase if enabled).
-3. Keep a bounded training set (`trainingWordLimit_`).
-4. Train BPE using pair-merge iterations (`bpeMergeOps_`).
-5. Build subword vocabulary and max token length (`maxSubwordChars_`).
-6. Rebuild token-ID maps from learned subwords.
+### SentencePiece
+- `TrainingConfig` (in `NKS_SentencePieceTokenizer`)
+  - `targetVocabSize`
+  - `maxPieceChars`
+  - `trainingLineLimit`
+  - `lowercase`
+  - `splitCamelCase`
+- `EncodeFallback` enum added.
+- Named constants for fallback cost, min thresholds, and reserve factors.
 
-### 2. Pre-tokenization
+### main.cpp
+- `TokenizerMode` enum
+- `AppPaths`, `BpeRuntimeConfig`, `SentencePieceRuntimeConfig`
+- Shared `TokenizationResult` for mode-independent reporting
 
-Entry point: `preTokenize(text)`
+## Binary Metadata Format (BPE)
 
-Responsibilities:
-1. Split on whitespace.
-2. Handle punctuation as separate tokens (configurable).
-3. Split camelCase boundaries when enabled.
+Path: `Metadata/bpe_model.bin`
 
-Example:
-- Input: `helloMyNameIsNitishSharmaAndI`
-- Pre-tokenized words: `hello`, `My`, `Name`, `Is`, `Nitish`, `Sharma`, `And`, `I`
+Stored data:
+1. magic header (`NKS_BPE1`)
+2. unknown token
+3. max subword char length
+4. subword count
+5. all subwords (length-prefixed)
 
-### 3. Subword Segmentation
+Benefit:
+- avoids retraining on every run
+- faster startup on repeated BPE usage
 
-Entry point: `subwordTokenizeWord(word)`
+## Progress Output
 
-Algorithm:
-1. Normalize word.
-2. Scan left-to-right.
-3. At each position, pick longest vocabulary match.
-4. Prefix non-first pieces with `##`.
+During first-time BPE training:
+- vocabulary load progress (word count interval)
+- merge progress (`step/total` and `%`)
+- early-stop message when no frequent pair remains
 
-Example shape:
-- `nitish` -> `[n, ##itis, ##h]` (depends on learned merges)
+## Pseudocode
 
-### 4. Encoding
+### 1) BPE: load or train
 
-Entry point: `encode(text)`
+```text
+function LoadOrTrainBPE(vocabPath, modelPath, cfg):
+    tokenizer = CreateBPETokenizer(cfg)
 
-Steps:
-1. Call `tokenize(text)` to get subword pieces.
-2. Convert each piece to token ID using `tokenToId_`.
-3. If piece is unknown:
-   - preserve with dynamic ID if `preserveUnknownTokens_ == true`
-   - otherwise map to `<unk>`.
+    if tokenizer.loadModel(modelPath):
+        return tokenizer
 
-### 5. Decoding
+    words = ReadAndNormalize(vocabPath, limit=cfg.trainingWordLimit)
+    tokenizer.trainBPE(words, mergeOps=cfg.mergeOps, showProgress=cfg.showProgress)
+    tokenizer.rebuildVocabularyMaps()
+    tokenizer.saveModel(modelPath)
+    return tokenizer
+```
 
-Entry point: `decode(tokenIds)`
+### 2) BPE: train merges
 
-Steps:
-1. Convert IDs back to tokens (`idToToken_` / dynamic map).
-2. Remove `##` from continuation pieces while joining.
-3. Join punctuation/connector tokens with spacing rules.
+```text
+function TrainBPE(words, mergeOps):
+    corpus = words as character symbols + </w>
 
-## Runtime Config Knobs
+    repeat step in [1..mergeOps]:
+        pairCounts = count adjacent symbol pairs in corpus
+        bestPair = argmax(pairCounts)
 
-Main configurable options:
-- `setLowercase(bool)`
-- `setSplitOnPunctuation(bool)`
-- `setKeepPunctuation(bool)`
-- `setSplitCamelCase(bool)`
-- `setPreserveUnknownTokens(bool)`
-- `setBpeMergeOps(size_t)`
-- `setTrainingWordLimit(size_t)`
+        if bestPair.count < MIN_FREQUENT_PAIR:
+            break
 
-Current `main.cpp` defaults:
-- `setBpeMergeOps(600)`
-- `setTrainingWordLimit(25000)`
+        corpus = merge bestPair everywhere in corpus
 
-## Why This Solves the Previous Issue
+    subwordVocab = collect merged symbols from corpus
+    maxSubwordChars = max UTF8 char length over subwordVocab
+```
 
-Previous behavior treated long concatenated words as a single token.
+### 3) BPE: tokenize / encode / decode
 
-Now:
-1. camelCase pre-tokenization splits boundaries
-2. subword segmentation breaks unseen words into known fragments
+```text
+function EncodeBPE(text):
+    preTokens = PreTokenize(text)  // whitespace, punctuation, camelCase
+    pieces = []
 
-Result: `helloMyNameIsNitishSharmaAndI` is no longer one giant unknown token.
+    for token in preTokens:
+        if punctuation:
+            pieces.push(token)
+        else:
+            pieces += GreedyLongestSubwordMatch(token)  // add ## for continuation
 
-## SRP and GPU-Parallelization Readiness
+    ids = map pieces to token ids (or dynamic unknown ids)
+    return pieces, ids
 
-Current design follows SRP and keeps compute boundaries clear:
-1. Pre-tokenization stage
-2. Subword segmentation stage
-3. ID mapping stage
-4. Decoding/formatting stage
+function DecodeBPE(ids):
+    pieces = map ids to tokens
+    join continuation and punctuation with spacing rules
+    return text
+```
 
-This allows future parallelization strategy such as:
-- Batch pre-tokenization on CPU threads
-- GPU kernel for parallel longest-match over token spans
-- Parallel ID lookup with device-side hash/table structures
+### 4) SentencePiece: training
 
-## Limitations and Next Improvements
+```text
+function TrainSentencePiece(corpusPath, cfg):
+    lines = ReadAndNormalize(corpusPath, limit=cfg.trainingLineLimit)
+    seed = all UTF8 chars from lines
+    add seed to vocabulary
 
-1. BPE training runs at startup; large merge counts can increase latency.
-2. Current implementation is BPE-style and simplified (not full GPT tokenizer parity).
-3. UTF-8 handling is robust for splitting, but normalization is basic (no full Unicode normalization forms).
-4. Persisting trained merges/vocab to a model file would avoid retraining every run.
+    ngrams = count substrings up to cfg.maxPieceChars
+    ranked = sort ngrams by frequency then length
 
-## Suggested Next Steps
+    add ranked candidates until cfg.targetVocabSize
+    compute log probabilities per piece
+```
 
-1. Add serialization for trained subword vocab and merge rules.
-2. Add benchmark command for tokens/sec and startup latency.
-3. Add unit tests for:
-   - camelCase boundaries
-   - punctuation spacing
-   - `##` continuation reconstruction
-   - unknown token preservation
+### 5) SentencePiece: encode (DP)
+
+```text
+function EncodeSentencePiece(text):
+    normalized = insert ? boundary markers + normalize case
+    chars = UTF8 split(normalized)
+
+    dp[0] = 0, dp[i] = INF for i>0
+    prev[i] = none
+
+    for i in 0..n-1:
+        for len in 1..maxPieceChars:
+            piece = chars[i:i+len]
+            if piece in vocab:
+                relax dp[i+len] with piece cost
+
+        if no transition chosen:
+            fallback to single char with fallback cost
+
+    backtrack prev[] to produce best piece sequence
+```
+
+## GPU/Parallelization Readiness
+
+Current SRP boundaries are preserved for future acceleration:
+1. Input normalization / pre-tokenization
+2. Subword segmentation (BPE greedy or SP DP)
+3. ID mapping
+4. Decode / display
+
+This separation allows later replacement of stage 2 or 3 with batched parallel/GPU kernels without changing app I/O flow.

@@ -8,6 +8,19 @@
 
 class NKS_SentencePieceTokenizer {
 public:
+    struct TrainingConfig {
+        std::size_t targetVocabSize = 8000;
+        std::size_t maxPieceChars = 8;
+        std::size_t trainingLineLimit = 50000;
+        bool lowercase = true;
+        bool splitCamelCase = true;
+    };
+
+    enum class EncodeFallback {
+        kUnknownPiece,
+        kSingleChar
+    };
+
     NKS_SentencePieceTokenizer();
 
     NKS_SentencePieceTokenizer& setTargetVocabSize(std::size_t size);
@@ -15,6 +28,7 @@ public:
     NKS_SentencePieceTokenizer& setTrainingLineLimit(std::size_t limit);
     NKS_SentencePieceTokenizer& setLowercase(bool enabled);
     NKS_SentencePieceTokenizer& setSplitCamelCase(bool enabled);
+    NKS_SentencePieceTokenizer& setTrainingConfig(const TrainingConfig& config);
 
     bool trainFromFile(const std::string& corpusPath);
 
@@ -50,12 +64,17 @@ private:
     std::vector<std::string> idToPiece_;
     std::unordered_map<std::string, double> pieceLogProb_;
 
-    std::size_t targetVocabSize_ = 8000;
-    std::size_t maxPieceChars_ = 8;
-    std::size_t trainingLineLimit_ = 50000;
-    bool lowercase_ = true;
-    bool splitCamelCase_ = true;
+    TrainingConfig config_;
     int unknownId_ = 0;
+
+    static constexpr std::size_t kMinPieceChars = 2;
+    static constexpr std::size_t kMinTargetVocab = 64;
+    static constexpr std::size_t kMinLineLimit = 1;
+    static constexpr std::size_t kUtf8ByteReserveFactor = 4;
+    static constexpr std::size_t kEncodingReservePadding = 8;
+    static constexpr double kFallbackCost = 20.0;
+    static constexpr int kMinNgramFrequency = 2;
+    static constexpr double kUnknownLogProb = -20.0;
 };
 
 #endif

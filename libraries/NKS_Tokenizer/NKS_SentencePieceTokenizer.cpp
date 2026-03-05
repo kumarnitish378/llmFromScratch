@@ -12,33 +12,47 @@ NKS_SentencePieceTokenizer::NKS_SentencePieceTokenizer() {
 }
 
 NKS_SentencePieceTokenizer& NKS_SentencePieceTokenizer::setTargetVocabSize(std::size_t size) {
-    if (size > 64) {
-        targetVocabSize_ = size;
+    if (size >= kMinTargetVocab) {
+        config_.targetVocabSize = size;
     }
     return *this;
 }
 
 NKS_SentencePieceTokenizer& NKS_SentencePieceTokenizer::setMaxPieceChars(std::size_t size) {
-    if (size > 1) {
-        maxPieceChars_ = size;
+    if (size >= kMinPieceChars) {
+        config_.maxPieceChars = size;
     }
     return *this;
 }
 
 NKS_SentencePieceTokenizer& NKS_SentencePieceTokenizer::setTrainingLineLimit(std::size_t limit) {
-    if (limit > 0) {
-        trainingLineLimit_ = limit;
+    if (limit >= kMinLineLimit) {
+        config_.trainingLineLimit = limit;
     }
     return *this;
 }
 
 NKS_SentencePieceTokenizer& NKS_SentencePieceTokenizer::setLowercase(bool enabled) {
-    lowercase_ = enabled;
+    config_.lowercase = enabled;
     return *this;
 }
 
 NKS_SentencePieceTokenizer& NKS_SentencePieceTokenizer::setSplitCamelCase(bool enabled) {
-    splitCamelCase_ = enabled;
+    config_.splitCamelCase = enabled;
+    return *this;
+}
+
+NKS_SentencePieceTokenizer& NKS_SentencePieceTokenizer::setTrainingConfig(const TrainingConfig& config) {
+    config_ = config;
+    if (config_.targetVocabSize < kMinTargetVocab) {
+        config_.targetVocabSize = kMinTargetVocab;
+    }
+    if (config_.maxPieceChars < kMinPieceChars) {
+        config_.maxPieceChars = kMinPieceChars;
+    }
+    if (config_.trainingLineLimit < kMinLineLimit) {
+        config_.trainingLineLimit = kMinLineLimit;
+    }
     return *this;
 }
 
@@ -49,7 +63,7 @@ bool NKS_SentencePieceTokenizer::trainFromFile(const std::string& corpusPath) {
     }
 
     std::vector<std::string> corpusLines;
-    corpusLines.reserve(trainingLineLimit_);
+    corpusLines.reserve(config_.trainingLineLimit);
 
     std::string line;
     while (std::getline(in, line)) {
@@ -58,7 +72,7 @@ bool NKS_SentencePieceTokenizer::trainFromFile(const std::string& corpusPath) {
             continue;
         }
         corpusLines.push_back(normalized);
-        if (corpusLines.size() >= trainingLineLimit_) {
+        if (corpusLines.size() >= config_.trainingLineLimit) {
             break;
         }
     }
@@ -89,9 +103,9 @@ std::vector<std::string> NKS_SentencePieceTokenizer::encode(const std::string& t
         }
 
         std::string candidate;
-        candidate.reserve(maxPieceChars_ * 4);
+        candidate.reserve(config_.maxPieceChars * kUtf8ByteReserveFactor);
 
-        const std::size_t maxLen = std::min(maxPieceChars_, chars.size() - i);
+        const std::size_t maxLen = std::min(config_.maxPieceChars, chars.size() - i);
         for (std::size_t len = 1; len <= maxLen; ++len) {
             candidate.append(chars[i + len - 1].bytes);
             const auto it = pieceLogProb_.find(candidate);
@@ -110,7 +124,7 @@ std::vector<std::string> NKS_SentencePieceTokenizer::encode(const std::string& t
 
         if (prevIndex[i + 1] == -1) {
             const std::string& oneChar = chars[i].bytes;
-            const double fallbackCost = bestCost[i] + 20.0;
+            const double fallbackCost = bestCost[i] + kFallbackCost;
             if (fallbackCost < bestCost[i + 1]) {
                 bestCost[i + 1] = fallbackCost;
                 prevIndex[i + 1] = static_cast<int>(i);
@@ -244,7 +258,7 @@ std::string NKS_SentencePieceTokenizer::normalizeInputForTraining(const std::str
 std::string NKS_SentencePieceTokenizer::normalizeInputForEncoding(const std::string& text) const {
     const std::vector<Utf8Char> chars = splitUtf8Chars(text);
     std::string normalized;
-    normalized.reserve(text.size() + 8);
+    normalized.reserve(text.size() + kEncodingReservePadding);
 
     bool needBoundary = true;
     bool hasPrevNonSpace = false;
@@ -256,7 +270,7 @@ std::string NKS_SentencePieceTokenizer::normalizeInputForEncoding(const std::str
             continue;
         }
 
-        if (splitCamelCase_ && hasPrevNonSpace && isAsciiLower(prevCp) && isAsciiUpper(ch.codepoint)) {
+        if (config_.splitCamelCase && hasPrevNonSpace && isAsciiLower(prevCp) && isAsciiUpper(ch.codepoint)) {
             needBoundary = true;
         }
 
@@ -265,7 +279,7 @@ std::string NKS_SentencePieceTokenizer::normalizeInputForEncoding(const std::str
             needBoundary = false;
         }
 
-        if (lowercase_ && ch.codepoint <= 127) {
+        if (config_.lowercase && ch.codepoint <= 127) {
             normalized.push_back(toLowerAscii(ch.bytes[0]));
         } else {
             normalized.append(ch.bytes);
@@ -285,7 +299,7 @@ void NKS_SentencePieceTokenizer::resetVocabulary() {
 
     idToPiece_.push_back("<unk>");
     pieceToId_["<unk>"] = 0;
-    pieceLogProb_["<unk>"] = -20.0;
+    pieceLogProb_["<unk>"] = kUnknownLogProb;
     unknownId_ = 0;
 }
 
@@ -323,10 +337,10 @@ void NKS_SentencePieceTokenizer::addFrequentSubstringCandidates(const std::vecto
             continue;
         }
 
-        const std::size_t maxLen = std::min(maxPieceChars_, chars.size());
+        const std::size_t maxLen = std::min(config_.maxPieceChars, chars.size());
         for (std::size_t i = 0; i < chars.size(); ++i) {
             std::string piece;
-            piece.reserve(maxPieceChars_ * 4);
+            piece.reserve(config_.maxPieceChars * kUtf8ByteReserveFactor);
 
             for (std::size_t len = 1; len <= maxLen && i + len <= chars.size(); ++len) {
                 piece.append(chars[i + len - 1].bytes);
@@ -342,7 +356,7 @@ void NKS_SentencePieceTokenizer::addFrequentSubstringCandidates(const std::vecto
     candidates.reserve(ngramCount.size());
     std::size_t total = 0;
     for (const auto& it : ngramCount) {
-        if (it.second < 2) {
+        if (it.second < kMinNgramFrequency) {
             continue;
         }
         candidates.push_back(it);
@@ -360,7 +374,7 @@ void NKS_SentencePieceTokenizer::addFrequentSubstringCandidates(const std::vecto
     });
 
     for (const auto& it : candidates) {
-        if (idToPiece_.size() >= targetVocabSize_) {
+        if (idToPiece_.size() >= config_.targetVocabSize) {
             break;
         }
         if (pieceToId_.find(it.first) != pieceToId_.end()) {

@@ -9,6 +9,18 @@
 
 class NKS_Tokenizer {
 public:
+    struct BpeTrainingConfig {
+        std::size_t mergeOps = 600;
+        std::size_t trainingWordLimit = 25000;
+        bool showProgress = true;
+    };
+
+    enum class TrainingStage {
+        kLoadVocabulary,
+        kTrainMerges,
+        kBuildModel
+    };
+
     NKS_Tokenizer();
     explicit NKS_Tokenizer(const std::string& vocabularyPath);
 
@@ -20,8 +32,12 @@ public:
     NKS_Tokenizer& setPreserveUnknownTokens(bool enabled);
     NKS_Tokenizer& setBpeMergeOps(std::size_t mergeOps);
     NKS_Tokenizer& setTrainingWordLimit(std::size_t maxWords);
+    NKS_Tokenizer& setShowTrainingProgress(bool enabled);
+    NKS_Tokenizer& setTrainingConfig(const BpeTrainingConfig& config);
 
     bool loadVocabulary(const std::string& vocabularyPath);
+    bool saveModel(const std::string& modelPath) const;
+    bool loadModel(const std::string& modelPath);
     std::vector<std::string> tokenize(const std::string& text) const;
     std::vector<int> encode(const std::string& text);
     std::string decode(const std::vector<int>& tokenIds) const;
@@ -72,11 +88,18 @@ private:
     bool keepPunctuation_ = true;
     bool splitCamelCase_ = true;
     bool preserveUnknownTokens_ = true;
-
-    std::size_t bpeMergeOps_ = 600;
-    std::size_t trainingWordLimit_ = 25000;
+    BpeTrainingConfig trainingConfig_;
 
     std::string unknownToken_ = "<unk>";
+
+    static constexpr std::size_t kMinValidCount = 1;
+    static constexpr std::size_t kProgressWordInterval = 5000;
+    static constexpr std::size_t kProgressMergeInterval = 50;
+    static constexpr int kMinFrequentPairCount = 2;
+    static constexpr double kApproxCharsPerToken = 4.0;
+    static constexpr const char* kUnknownTokenLiteral = "<unk>";
+    static constexpr const char* kWordBoundaryMarker = "</w>";
+    static constexpr const char* kContinuationPrefix = "##";
 };
 
 #endif
