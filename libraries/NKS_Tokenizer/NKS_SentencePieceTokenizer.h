@@ -34,6 +34,7 @@ public:
 
     std::vector<std::string> encode(const std::string& text) const;
     std::vector<int> encodeToIds(const std::string& text) const;
+    std::vector<std::vector<int>> encodeBatchToIds(const std::vector<std::string>& texts) const;
     std::string decode(const std::vector<std::string>& pieces) const;
     std::string decodeFromIds(const std::vector<int>& ids) const;
 

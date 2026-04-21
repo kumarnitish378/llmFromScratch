@@ -21,6 +21,16 @@ public:
         kBuildModel
     };
 
+    struct TrainingStats {
+        std::size_t rowsRead = 0;
+        std::size_t tokensUsedForTraining = 0;
+        std::size_t uniqueTokens = 0;
+        std::size_t finalVocabSize = 0;
+        double loadMs = 0.0;
+        double trainMs = 0.0;
+        double buildMs = 0.0;
+    };
+
     NKS_Tokenizer();
     explicit NKS_Tokenizer(const std::string& vocabularyPath);
 
@@ -40,10 +50,12 @@ public:
     bool loadModel(const std::string& modelPath);
     std::vector<std::string> tokenize(const std::string& text) const;
     std::vector<int> encode(const std::string& text);
+    std::vector<std::vector<int>> encodeBatch(const std::vector<std::string>& texts);
     std::string decode(const std::vector<int>& tokenIds) const;
 
     std::size_t vocabularySize() const;
     std::size_t estimateModelTokensApprox(const std::string& text) const;
+    const TrainingStats& lastTrainingStats() const;
 
 private:
     struct Utf8Char {
@@ -67,7 +79,7 @@ private:
 
     std::vector<PreToken> preTokenize(const std::string& text) const;
     std::vector<std::string> subwordTokenizeWord(const std::string& word) const;
-    void trainBpe(const std::vector<std::string>& words);
+    void trainBpe(const std::unordered_map<std::string, int>& wordFreq);
     void rebuildIdMapsFromSubwords();
     bool isConnectorPunctuation(const std::string& token) const;
 
@@ -89,6 +101,7 @@ private:
     bool splitCamelCase_ = true;
     bool preserveUnknownTokens_ = true;
     BpeTrainingConfig trainingConfig_;
+    TrainingStats trainingStats_;
 
     std::string unknownToken_ = "<unk>";
 

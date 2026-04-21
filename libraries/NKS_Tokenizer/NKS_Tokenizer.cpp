@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -219,16 +220,18 @@ NKS_Tokenizer& NKS_Tokenizer::setTrainingConfig(const BpeTrainingConfig& config)
 }
 
 bool NKS_Tokenizer::loadVocabulary(const std::string& vocabularyPath) {
-    const std::vector<std::string> corpusRows = loadCorpusRows(
-        vocabularyPath,
-        trainingConfig_.trainingWordLimit == 0 ? 0 : trainingConfig_.trainingWordLimit);
+    trainingStats_ = TrainingStats{};
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::vector<std::string> corpusRows = loadCorpusRows(vocabularyPath, 0);
 
     if (corpusRows.empty()) {
         return false;
     }
 
-    std::vector<std::string> words;
-    words.reserve(trainingConfig_.trainingWordLimit);
+    std::unordered_map<std::string, int> wordFreq;
+    wordFreq.reserve(trainingConfig_.trainingWordLimit);
+    trainingStats_.rowsRead = corpusRows.size();
 
     for (const std::string& row : corpusRows) {
         const std::vector<PreToken> preTokens = preTokenize(row);
@@ -241,34 +244,52 @@ bool NKS_Tokenizer::loadVocabulary(const std::string& vocabularyPath) {
                 continue;
             }
 
-            words.push_back(normalized);
-            if (trainingConfig_.showProgress && (words.size() % kProgressWordInterval == 0)) {
-                std::cout << "[BPE] Loaded " << words.size() << " training words..." << std::endl;
+            ++wordFreq[normalized];
+            ++trainingStats_.tokensUsedForTraining;
+            if (trainingConfig_.showProgress && (trainingStats_.tokensUsedForTraining % kProgressWordInterval == 0)) {
+                std::cout << "[BPE] Loaded " << trainingStats_.tokensUsedForTraining << " training words..." << std::endl;
             }
 
-            if (words.size() >= trainingConfig_.trainingWordLimit) {
+            if (trainingStats_.tokensUsedForTraining >= trainingConfig_.trainingWordLimit) {
                 break;
             }
         }
-        if (words.size() >= trainingConfig_.trainingWordLimit) {
+        if (trainingStats_.tokensUsedForTraining >= trainingConfig_.trainingWordLimit) {
             break;
         }
     }
 
-    if (words.empty()) {
+    if (trainingStats_.tokensUsedForTraining == 0) {
         return false;
     }
+    trainingStats_.uniqueTokens = wordFreq.size();
+    trainingStats_.loadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
     if (trainingConfig_.showProgress) {
-        std::cout << "[BPE] Starting training with " << words.size() << " words and " << trainingConfig_.mergeOps
+        std::cout << "[BPE] Starting training with " << trainingStats_.tokensUsedForTraining
+                  << " words and " << trainingConfig_.mergeOps
                   << " merge steps max..." << std::endl;
     }
-    trainBpe(words);
+
+    const auto t1 = std::chrono::steady_clock::now();
+    trainBpe(wordFreq);
+    trainingStats_.trainMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+
+    const auto t2 = std::chrono::steady_clock::now();
     rebuildIdMapsFromSubwords();
+    trainingStats_.buildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t2).count();
+    trainingStats_.finalVocabSize = idToToken_.size();
 
     dynamicTokenToId_.clear();
     dynamicIdToToken_.clear();
     nextDynamicId_ = static_cast<int>(idToToken_.size());
+
+    if (trainingConfig_.showProgress) {
+        std::cout << "[BPE] Timing(ms) load=" << static_cast<long long>(trainingStats_.loadMs)
+                  << ", train=" << static_cast<long long>(trainingStats_.trainMs)
+                  << ", build=" << static_cast<long long>(trainingStats_.buildMs)
+                  << ", vocab=" << trainingStats_.finalVocabSize << std::endl;
+    }
     return true;
 }
 
@@ -430,9 +451,33 @@ std::vector<int> NKS_Tokenizer::encode(const std::string& text) {
     return tokenIds;
 }
 
+std::vector<std::vector<int>> NKS_Tokenizer::encodeBatch(const std::vector<std::string>& texts) {
+    std::vector<std::vector<int>> out;
+    out.reserve(texts.size());
+    for (const std::string& text : texts) {
+        out.push_back(encode(text));
+    }
+    return out;
+}
+
 std::string NKS_Tokenizer::decode(const std::vector<int>& tokenIds) const {
     std::ostringstream oss;
     bool isStart = true;
+    bool suppressNextSpace = false;
+    bool doubleQuoteIsOpen = true;
+    bool backtickIsOpen = true;
+
+    const auto isOpeningBracket = [](const std::string& token) {
+        return token == "(" || token == "[" || token == "{" || token == "<";
+    };
+
+    const auto isClosingBracket = [](const std::string& token) {
+        return token == ")" || token == "]" || token == "}" || token == ">";
+    };
+
+    const auto isTerminalPunctuation = [](const std::string& token) {
+        return token == "." || token == "," || token == "!" || token == "?" || token == ":" || token == ";";
+    };
 
     for (int id : tokenIds) {
         std::string token = unknownToken_;
@@ -448,19 +493,60 @@ std::string NKS_Tokenizer::decode(const std::vector<int>& tokenIds) const {
 
         const bool isContinuation = token.rfind("##", 0) == 0;
         const std::string clean = isContinuation ? token.substr(2) : token;
-        const bool isPunctuation = splitUtf8Chars(clean).size() == 1 && isUnicodePunctuation(splitUtf8Chars(clean)[0].codepoint);
+        const std::vector<Utf8Char> cleanChars = splitUtf8Chars(clean);
+        const bool isPunctuation = cleanChars.size() == 1 && isUnicodePunctuation(cleanChars[0].codepoint);
 
         if (isStart) {
             oss << clean;
             isStart = false;
+            suppressNextSpace = isOpeningBracket(clean) || clean == "\"" || clean == "`";
+            if (clean == "\"") {
+                doubleQuoteIsOpen = false;
+            } else if (clean == "`") {
+                backtickIsOpen = false;
+            }
             continue;
         }
 
-        if (isContinuation || isPunctuation || isConnectorPunctuation(clean)) {
+        bool attachWithoutSpace = isContinuation || isConnectorPunctuation(clean);
+        bool setSuppressNextSpace = false;
+
+        if (isPunctuation) {
+            if (isOpeningBracket(clean)) {
+                attachWithoutSpace = suppressNextSpace;
+                setSuppressNextSpace = true;
+            } else if (isClosingBracket(clean) || isTerminalPunctuation(clean)) {
+                attachWithoutSpace = true;
+            } else if (clean == "\"") {
+                if (doubleQuoteIsOpen) {
+                    attachWithoutSpace = suppressNextSpace;
+                    setSuppressNextSpace = true;
+                } else {
+                    attachWithoutSpace = true;
+                }
+                doubleQuoteIsOpen = !doubleQuoteIsOpen;
+            } else if (clean == "`") {
+                if (backtickIsOpen) {
+                    attachWithoutSpace = suppressNextSpace;
+                    setSuppressNextSpace = true;
+                } else {
+                    attachWithoutSpace = true;
+                }
+                backtickIsOpen = !backtickIsOpen;
+            } else {
+                attachWithoutSpace = true;
+            }
+        } else if (suppressNextSpace) {
+            attachWithoutSpace = true;
+        }
+
+        if (attachWithoutSpace) {
             oss << clean;
         } else {
             oss << ' ' << clean;
         }
+
+        suppressNextSpace = setSuppressNextSpace;
     }
 
     return oss.str();
@@ -472,6 +558,10 @@ std::size_t NKS_Tokenizer::vocabularySize() const {
 
 std::size_t NKS_Tokenizer::estimateModelTokensApprox(const std::string& text) const {
     return static_cast<std::size_t>(std::ceil(static_cast<double>(text.size()) / kApproxCharsPerToken));
+}
+
+const NKS_Tokenizer::TrainingStats& NKS_Tokenizer::lastTrainingStats() const {
+    return trainingStats_;
 }
 
 std::vector<NKS_Tokenizer::Utf8Char> NKS_Tokenizer::splitUtf8Chars(const std::string& text) {
@@ -663,12 +753,7 @@ std::vector<std::string> NKS_Tokenizer::subwordTokenizeWord(const std::string& w
     return pieces;
 }
 
-void NKS_Tokenizer::trainBpe(const std::vector<std::string>& words) {
-    std::unordered_map<std::string, int> wordFreq;
-    for (const std::string& w : words) {
-        ++wordFreq[w];
-    }
-
+void NKS_Tokenizer::trainBpe(const std::unordered_map<std::string, int>& wordFreq) {
     std::vector<WordSymbols> corpus;
     corpus.reserve(wordFreq.size());
 
@@ -694,6 +779,7 @@ void NKS_Tokenizer::trainBpe(const std::vector<std::string>& words) {
 
     for (std::size_t step = 0; step < trainingConfig_.mergeOps; ++step) {
         std::unordered_map<std::pair<std::string, std::string>, int, PairHash> pairCounts;
+        pairCounts.reserve(corpus.size() * 2);
 
         for (const WordSymbols& ws : corpus) {
             if (ws.symbols.size() < 2) {
@@ -808,7 +894,7 @@ void NKS_Tokenizer::rebuildIdMapsFromSubwords() {
         }
     }
 
-    const std::string punct = ".,!?:;()[]{}<>-_/+'\"";
+    const std::string punct = ".,!?:;()[]{}<>-_/+'\"`";
     for (char c : punct) {
         std::string p(1, c);
         if (tokenToId_.find(p) == tokenToId_.end()) {

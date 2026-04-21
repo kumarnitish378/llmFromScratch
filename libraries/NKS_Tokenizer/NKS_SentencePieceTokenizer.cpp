@@ -269,6 +269,16 @@ std::vector<int> NKS_SentencePieceTokenizer::encodeToIds(const std::string& text
     return ids;
 }
 
+std::vector<std::vector<int>> NKS_SentencePieceTokenizer::encodeBatchToIds(
+    const std::vector<std::string>& texts) const {
+    std::vector<std::vector<int>> out;
+    out.reserve(texts.size());
+    for (const std::string& text : texts) {
+        out.push_back(encodeToIds(text));
+    }
+    return out;
+}
+
 std::string NKS_SentencePieceTokenizer::decode(const std::vector<std::string>& pieces) const {
     std::string out;
     for (const std::string& p : pieces) {

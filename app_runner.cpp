@@ -2,13 +2,18 @@
 
 #include <cmath>
 #include <cctype>
+#include <algorithm>
+#include <fstream>
 #include <iostream>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
 #ifdef _WIN32
 #include <direct.h>
+#include <windows.h>
 #else
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #endif
@@ -18,14 +23,24 @@
 #include "libraries/CLM_Compressor/CLM_Compressor.h"
 
 namespace {
+std::string getEnvOrDefault(const char* name, const std::string& fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || *value == '\0') {
+        return fallback;
+    }
+    return std::string(value);
+}
+
 struct AppPaths {
-    std::string vocabularyPath = "Data/Training_Essay_Data.csv";
-    std::string bpeModelPath = "Metadata/bpe_model_essay.bin";
+    std::string bpeTrainingPath = getEnvOrDefault("NKS_BPE_TRAINING_PATH", "Data/processed");
+    std::string sentencePieceTrainingPath = getEnvOrDefault("NKS_SP_TRAINING_PATH", "Data/processed");
+    std::string bpeModelPath = getEnvOrDefault("NKS_BPE_MODEL_PATH", "Metadata/bpe_model_processed.bin");
+    std::string mergedTxtCorpusPath = getEnvOrDefault("NKS_MERGED_TXT_CORPUS_PATH", "Metadata/processed_txt_corpus.txt");
 };
 
 struct BpeRuntimeConfig {
-    std::size_t mergeOps = 600;
-    std::size_t trainingWordLimit = 25000;
+    std::size_t mergeOps = 5000;
+    std::size_t trainingWordLimit = 100000000;
     bool showTrainingProgress = true;
 };
 
@@ -50,6 +65,220 @@ struct TokenizationResult {
     std::size_t approxModelTokenCount = 0;
     std::size_t vocabularySize = 0;
 };
+
+void printBpeTrainingStats(const NKS_Tokenizer::TrainingStats& stats) {
+    std::cout << "[BPE][Stats] rows=" << stats.rowsRead
+              << ", tokens=" << stats.tokensUsedForTraining
+              << ", unique_tokens=" << stats.uniqueTokens
+              << ", final_vocab=" << stats.finalVocabSize << std::endl;
+    std::cout << "[BPE][Stats] time_ms { load=" << static_cast<long long>(stats.loadMs)
+              << ", train=" << static_cast<long long>(stats.trainMs)
+              << ", build=" << static_cast<long long>(stats.buildMs)
+              << " }" << std::endl;
+}
+
+bool endsWithIgnoreCase(const std::string& value, const std::string& suffix) {
+    if (suffix.size() > value.size()) {
+        return false;
+    }
+    const std::size_t offset = value.size() - suffix.size();
+    for (std::size_t i = 0; i < suffix.size(); ++i) {
+        const char a = static_cast<char>(std::tolower(static_cast<unsigned char>(value[offset + i])));
+        const char b = static_cast<char>(std::tolower(static_cast<unsigned char>(suffix[i])));
+        if (a != b) {
+            return false;
+        }
+    }
+    return true;
+}
+
+#ifdef _WIN32
+void collectTxtFilesRecursive(const std::string& directoryPath, std::vector<std::string>& files) {
+    std::string pattern = directoryPath;
+    if (!pattern.empty() && pattern.back() != '\\' && pattern.back() != '/') {
+        pattern += "\\";
+    }
+    pattern += "*";
+
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(pattern.c_str(), &findData);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    do {
+        const std::string name = findData.cFileName;
+        if (name == "." || name == "..") {
+            continue;
+        }
+
+        std::string fullPath = directoryPath;
+        if (!fullPath.empty() && fullPath.back() != '\\' && fullPath.back() != '/') {
+            fullPath += "\\";
+        }
+        fullPath += name;
+
+        if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            collectTxtFilesRecursive(fullPath, files);
+            continue;
+        }
+
+        if (endsWithIgnoreCase(name, ".txt")) {
+            files.push_back(fullPath);
+        }
+    } while (FindNextFileA(hFind, &findData) != 0);
+
+    FindClose(hFind);
+}
+
+std::vector<std::string> listTxtFilesInDirectory(const std::string& directoryPath) {
+    std::vector<std::string> files;
+    collectTxtFilesRecursive(directoryPath, files);
+    std::sort(files.begin(), files.end());
+    return files;
+}
+#else
+void collectTxtFilesRecursive(const std::string& directoryPath, std::vector<std::string>& files) {
+    DIR* dir = opendir(directoryPath.c_str());
+    if (dir == nullptr) {
+        return;
+    }
+
+    dirent* entry = nullptr;
+    while ((entry = readdir(dir)) != nullptr) {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..") {
+            continue;
+        }
+        std::string fullPath = directoryPath;
+        if (!fullPath.empty() && fullPath.back() != '/') {
+            fullPath += "/";
+        }
+        fullPath += name;
+
+        struct stat st;
+        if (stat(fullPath.c_str(), &st) != 0) {
+            continue;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            collectTxtFilesRecursive(fullPath, files);
+            continue;
+        }
+
+        if (endsWithIgnoreCase(name, ".txt")) {
+            files.push_back(fullPath);
+        }
+    }
+
+    closedir(dir);
+}
+
+std::vector<std::string> listTxtFilesInDirectory(const std::string& directoryPath) {
+    std::vector<std::string> files;
+    collectTxtFilesRecursive(directoryPath, files);
+    std::sort(files.begin(), files.end());
+    return files;
+}
+#endif
+
+bool isDirectoryPath(const std::string& path) {
+#ifdef _WIN32
+    const DWORD attrs = GetFileAttributesA(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        return false;
+    }
+    return S_ISDIR(st.st_mode);
+#endif
+}
+
+bool mergeTxtFilesToCorpus(
+    const std::vector<std::string>& txtFiles,
+    const std::string& outputCorpusPath) {
+    const std::size_t pos = outputCorpusPath.find_last_of("/\\");
+    if (pos != std::string::npos) {
+        const std::string directory = outputCorpusPath.substr(0, pos);
+#ifdef _WIN32
+        _mkdir(directory.c_str());
+#else
+        mkdir(directory.c_str(), 0755);
+#endif
+    }
+
+    std::ofstream out(outputCorpusPath.c_str(), std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    std::vector<std::ifstream> inputs;
+    inputs.reserve(txtFiles.size());
+    for (std::size_t i = 0; i < txtFiles.size(); ++i) {
+        inputs.emplace_back(txtFiles[i].c_str());
+    }
+
+    std::vector<bool> exhausted(inputs.size(), false);
+    std::size_t remainingFiles = 0;
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        if (inputs[i].is_open()) {
+            ++remainingFiles;
+        } else {
+            exhausted[i] = true;
+        }
+    }
+
+    while (remainingFiles > 0) {
+        bool wroteAnyLineInPass = false;
+        for (std::size_t i = 0; i < inputs.size(); ++i) {
+            if (exhausted[i]) {
+                continue;
+            }
+
+            std::string line;
+            if (std::getline(inputs[i], line)) {
+                out << line << '\n';
+                wroteAnyLineInPass = true;
+                continue;
+            }
+
+            exhausted[i] = true;
+            --remainingFiles;
+        }
+
+        if (!wroteAnyLineInPass) {
+            break;
+        }
+    }
+
+    return true;
+}
+
+bool resolveTrainingCorpusPath(
+    const std::string& configuredPath,
+    const std::string& mergedOutputPath,
+    std::string& resolvedPath) {
+    if (!isDirectoryPath(configuredPath)) {
+        resolvedPath = configuredPath;
+        return true;
+    }
+
+    const std::vector<std::string> txtFiles = listTxtFilesInDirectory(configuredPath);
+    if (txtFiles.empty()) {
+        return false;
+    }
+
+    if (!mergeTxtFilesToCorpus(txtFiles, mergedOutputPath)) {
+        return false;
+    }
+
+    resolvedPath = mergedOutputPath;
+    return true;
+}
 
 std::string formatPieceForTerminal(const std::string& piece) {
     const std::string marker = "\xE2\x96\x81";
@@ -146,17 +375,25 @@ NKS_SentencePieceTokenizer createSentencePieceTokenizer() {
 bool loadOrTrainBpeModelOrReport(
     NKS_Tokenizer& tokenizer,
     const std::string& vocabularyPath,
-    const std::string& modelPath) {
+    const std::string& modelPath,
+    const std::string& mergedCorpusPath) {
     if (tokenizer.loadModel(modelPath)) {
         std::cout << "Loaded BPE model from metadata: " << modelPath << std::endl;
         return true;
     }
 
-    std::cout << "Metadata model not found/invalid. Training BPE model..." << std::endl;
-    if (!tokenizer.loadVocabulary(vocabularyPath)) {
-        std::cerr << "Failed to train BPE model from vocabulary file: " << vocabularyPath << std::endl;
+    std::string resolvedTrainingPath;
+    if (!resolveTrainingCorpusPath(vocabularyPath, mergedCorpusPath, resolvedTrainingPath)) {
+        std::cerr << "Failed to resolve BPE training corpus from path: " << vocabularyPath << std::endl;
         return false;
     }
+
+    std::cout << "Metadata model not found/invalid. Training BPE model..." << std::endl;
+    if (!tokenizer.loadVocabulary(resolvedTrainingPath)) {
+        std::cerr << "Failed to train BPE model from vocabulary file: " << resolvedTrainingPath << std::endl;
+        return false;
+    }
+    printBpeTrainingStats(tokenizer.lastTrainingStats());
 
     const std::size_t pos = modelPath.find_last_of("/\\");
     if (pos != std::string::npos) {
@@ -280,7 +517,11 @@ int runTokenizerApplication() {
 
     if (mode == TokenizerMode::kBpe) {
         NKS_Tokenizer tokenizer = createBpeTokenizer();
-        if (!loadOrTrainBpeModelOrReport(tokenizer, paths.vocabularyPath, paths.bpeModelPath)) {
+        if (!loadOrTrainBpeModelOrReport(
+                tokenizer,
+                paths.bpeTrainingPath,
+                paths.bpeModelPath,
+                paths.mergedTxtCorpusPath)) {
             return 1;
         }
 
@@ -290,8 +531,18 @@ int runTokenizerApplication() {
     }
 
     if (mode == TokenizerMode::kSentencePiece) {
+        std::string resolvedTrainingPath;
+        if (!resolveTrainingCorpusPath(
+                paths.sentencePieceTrainingPath,
+                paths.mergedTxtCorpusPath,
+                resolvedTrainingPath)) {
+            std::cerr << "Failed to resolve SentencePiece training corpus from path: "
+                      << paths.sentencePieceTrainingPath << std::endl;
+            return 1;
+        }
+
         NKS_SentencePieceTokenizer tokenizer = createSentencePieceTokenizer();
-        if (!trainSentencePieceOrReport(tokenizer, paths.vocabularyPath)) {
+        if (!trainSentencePieceOrReport(tokenizer, resolvedTrainingPath)) {
             return 1;
         }
 
