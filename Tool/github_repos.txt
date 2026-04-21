@@ -1,0 +1,17 @@
+# Mixed production-oriented set.
+python/cpython
+numpy/numpy
+pallets/flask
+django/django
+huggingface/transformers
+pytorch/pytorch
+tensorflow/tensorflow
+microsoft/TypeScript
+facebook/react
+nodejs/node
+golang/go
+rust-lang/rust
+llvm/llvm-project
+opencv/opencv
+redis/redis
+postgres/postgres

@@ -1,0 +1,97 @@
+# Production-oriented default crawler seeds
+# NOTE:
+# - Keep only publicly accessible pages.
+# - Respect robots.txt, rate limits, and site policies while crawling.
+# - Prefer high-signal technical/documentation/article pages.
+
+# ------------------------------------------------------------
+# Core encyclopedic references
+# ------------------------------------------------------------
+https://en.wikipedia.org/wiki/Natural_language_processing
+https://en.wikipedia.org/wiki/Hinglish
+https://hi.wikipedia.org/wiki/कृत्रिम_बुद्धिमत्ता
+https://en.wikipedia.org/wiki/Mathematics
+https://en.wikipedia.org/wiki/Linear_algebra
+https://en.wikipedia.org/wiki/Probability_theory
+https://hi.wikipedia.org/wiki/गणित
+https://sa.wikipedia.org/wiki/संस्कृतभाषा
+https://sa.wikipedia.org/wiki/गणितम्
+
+# ------------------------------------------------------------
+# Official documentation / tutorials
+# ------------------------------------------------------------
+https://docs.python.org/3/
+https://numpy.org/doc/
+https://pandas.pydata.org/docs/
+https://pytorch.org/docs/stable/index.html
+https://www.tensorflow.org/guide
+https://scikit-learn.org/stable/user_guide.html
+https://developer.mozilla.org/en-US/docs/Web
+https://fastapi.tiangolo.com/
+https://flask.palletsprojects.com/
+https://learn.microsoft.com/en-us/cpp/
+https://ardupilot.org/dev/docs/learning-the-ardupilot-codebase.html
+https://ardupilot.org/copter/docs/parameters.html
+https://stackoverflow.com/questions
+
+# ------------------------------------------------------------
+# Coding and engineering articles
+# ------------------------------------------------------------
+https://realpython.com/
+https://www.freecodecamp.org/news/
+https://towardsdatascience.com/
+https://machinelearningmastery.com/blog/
+https://www.analyticsvidhya.com/blog/
+https://www.geeksforgeeks.org/machine-learning/
+https://www.geeksforgeeks.org/data-structures/
+https://www.baeldung.com/
+https://blog.bytebytego.com/
+
+# ------------------------------------------------------------
+# Community and developer platforms
+# ------------------------------------------------------------
+https://stackoverflow.blog/
+https://dev.to/
+https://github.blog/
+https://discuss.pytorch.org/
+https://discuss.huggingface.co/
+https://forum.djangoproject.com/
+
+# ------------------------------------------------------------
+# GitHub documentation and high-value repos
+# ------------------------------------------------------------
+https://docs.github.com/en
+https://github.com/pytorch/pytorch
+https://github.com/tensorflow/tensorflow
+https://github.com/scikit-learn/scikit-learn
+https://github.com/huggingface/transformers
+https://github.com/karpathy/nanoGPT
+
+# ------------------------------------------------------------
+# Books / open educational content
+# ------------------------------------------------------------
+https://openstax.org/subjects/math
+https://openstax.org/subjects/science
+https://ocw.mit.edu/
+https://www.gutenberg.org/
+https://archive.org/details/texts
+
+# ------------------------------------------------------------
+# News and long-form media (tech/science)
+# ------------------------------------------------------------
+https://www.reuters.com/technology/
+https://www.bbc.com/news/technology
+https://www.thehindu.com/sci-tech/technology/
+https://indianexpress.com/section/technology/
+https://www.nature.com/subjects/machine-learning
+https://spectrum.ieee.org/artificial-intelligence
+
+# ------------------------------------------------------------
+# India-focused Hindi / Hinglish / Sanskrit sources
+# ------------------------------------------------------------
+https://www.bbc.com/hindi
+https://www.aajtak.in/
+https://hindi.news18.com/
+https://www.jagran.com/
+https://sanskritdocuments.org/
+https://sanskrit.nic.in/

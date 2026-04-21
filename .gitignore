@@ -1,0 +1,11 @@
+Metadata/
+build/
+*.o
+*.d
+*.exe
+.env
+Metadata/
+*.bin
+*.pt
+*.model
+*.zip
