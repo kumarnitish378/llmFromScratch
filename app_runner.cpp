@@ -21,6 +21,7 @@
 #include "libraries/NKS_Tokenizer/NKS_SentencePieceTokenizer.h"
 #include "libraries/NKS_Tokenizer/NKS_Tokenizer.h"
 #include "libraries/CLM_Compressor/CLM_Compressor.h"
+#include "libraries/NKS_LLM/NKS_LLM.h"
 
 namespace {
 std::string getEnvOrDefault(const char* name, const std::string& fallback) {
@@ -578,4 +579,107 @@ int runCompressionExample() {
         std::cerr << "Compression failed: unknown error" << std::endl;
         return 1;
     }
+}
+
+int runLLMExample() {
+    using namespace nks_llm;
+
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "    LLM from Scratch - Demo" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+
+    // Create a small model for demonstration (faster initialization)
+    std::cout << "[1] Creating LLM model..." << std::endl;
+    ModelConfig config = ModelConfig::get_small_model();
+    config.batch_size = 1;
+    config.max_seq_length = 128;
+    
+    std::cout << "  - Vocab size: " << config.vocab_size << std::endl;
+    std::cout << "  - Embedding dim: " << config.embedding_dim << std::endl;
+    std::cout << "  - Num layers: " << config.num_layers << std::endl;
+    std::cout << "  - Num heads: " << config.num_heads << std::endl;
+    
+    LLMModel model(config);
+    std::cout << "  - Total parameters: " << model.num_parameters() / 1e6 << "M" << std::endl;
+
+    // Create sample input
+    std::cout << "\n[2] Creating sample input..." << std::endl;
+    std::vector<int> sample_input = {1, 5, 10, 15, 20, 25, 30};
+    while (sample_input.size() < config.max_seq_length / 2) {
+        sample_input.push_back(rand() % config.vocab_size);
+    }
+    
+    Tensor input_ids({1, static_cast<size_t>(sample_input.size())});
+    for (size_t i = 0; i < sample_input.size(); ++i) {
+        input_ids[i] = static_cast<float>(sample_input[i]);
+    }
+    std::cout << "  - Input shape: " << input_ids.shape()[0] << " x " << input_ids.shape()[1] << std::endl;
+
+    // Forward pass
+    std::cout << "\n[3] Running forward pass..." << std::endl;
+    try {
+        Tensor logits = model.forward(input_ids);
+        std::cout << "  - Logits shape: " << logits.shape()[0] << " x " 
+                  << logits.shape()[1] << " x " << logits.shape()[2] << std::endl;
+        std::cout << "  ✓ Forward pass successful!" << std::endl;
+    } catch (const std::exception& ex) {
+        std::cerr << "  ✗ Forward pass failed: " << ex.what() << std::endl;
+        return 1;
+    }
+
+    // Training step example
+    std::cout << "\n[4] Simulating training step..." << std::endl;
+    try {
+        Tensor target_ids({1, static_cast<size_t>(sample_input.size())});
+        for (size_t i = 0; i < sample_input.size(); ++i) {
+            target_ids[i] = static_cast<float>((sample_input[i] + 1) % config.vocab_size);
+        }
+        
+        LLMModel::TrainStep step = model.training_step(input_ids, target_ids);
+        std::cout << "  - Loss: " << step.loss << std::endl;
+        std::cout << "  - Perplexity: " << step.perplexity << std::endl;
+        std::cout << "  ✓ Training step successful!" << std::endl;
+    } catch (const std::exception& ex) {
+        std::cerr << "  ✗ Training step failed: " << ex.what() << std::endl;
+        return 1;
+    }
+
+    // Generation example
+    std::cout << "\n[5] Generating tokens..." << std::endl;
+    try {
+        std::vector<int> prompt = {1, 5, 10};
+        auto generated = model.generate(prompt, 10);
+        std::cout << "  - Prompt: [1, 5, 10]" << std::endl;
+        std::cout << "  - Generated: [";
+        for (size_t i = 3; i < generated.size(); ++i) {
+            if (i > 3) std::cout << ", ";
+            std::cout << generated[i];
+        }
+        std::cout << "]" << std::endl;
+        std::cout << "  ✓ Generation successful!" << std::endl;
+    } catch (const std::exception& ex) {
+        std::cerr << "  ✗ Generation failed: " << ex.what() << std::endl;
+        return 1;
+    }
+
+    // Save/Load checkpoint
+    std::cout << "\n[6] Testing checkpoint save/load..." << std::endl;
+    try {
+        std::string checkpoint_path = "Metadata/llm_checkpoint.bin";
+        if (model.save(checkpoint_path)) {
+            std::cout << "  ✓ Model saved to: " << checkpoint_path << std::endl;
+        } else {
+            std::cerr << "  ✗ Failed to save model" << std::endl;
+            return 1;
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "  ✗ Checkpoint failed: " << ex.what() << std::endl;
+        return 1;
+    }
+
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "    Demo completed successfully!" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+    
+    return 0;
 }

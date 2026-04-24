@@ -9,7 +9,8 @@ TARGET    := $(BUILD_DIR)/app.exe
 
 SOURCES := $(wildcard *.cpp) \
            $(wildcard libraries/NKS_Tokenizer/*.cpp) \
-           $(wildcard libraries/CLM_Compressor/*.cpp)
+           $(wildcard libraries/CLM_Compressor/*.cpp) \
+           $(wildcard libraries/NKS_LLM/*.cpp)
 SOURCES := $(filter-out libraries/CLM_Compressor/main.cpp,$(SOURCES))
 
 OBJECTS := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SOURCES))

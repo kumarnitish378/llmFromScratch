@@ -1,11 +1,41 @@
-Metadata/
+# Build artifacts
 build/
-Data/
 *.o
 *.d
 *.exe
+*.dll
+*.so
+*.a
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.vim
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+.Python
+venv/
+env/
 .env
+
+# Project-specific
+Metadata/
+Data/
 *.bin
 *.pt
 *.model
+*.clm
 *.zip
+
+# OS
+Thumbs.db
+.DS_Store

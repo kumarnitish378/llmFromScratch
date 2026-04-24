@@ -3,5 +3,6 @@
 
 int runTokenizerApplication();
 int runCompressionExample();
+int runLLMExample();
 
 #endif
