@@ -1,4 +1,5 @@
 #include "tensor.h"
+#include "gpu_backend.h"
 #include <fstream>
 #include <cmath>
 #include <iostream>
@@ -240,6 +241,12 @@ Tensor Tensor::matmul(const Tensor& a, const Tensor& b) {
         const float* b_ptr = b.data_.data();
         float* r_ptr = result.data_.data();
 
+#ifdef NKS_ENABLE_CUDA
+        if (gpu_backend::matmul_2d(a_ptr, b_ptr, r_ptr, m, n, p)) {
+            return result;
+        }
+#endif
+
         for (size_t i = 0; i < m; ++i) {
             for (size_t j = 0; j < p; ++j) {
                 float sum = 0.0f;
@@ -266,6 +273,12 @@ Tensor Tensor::matmul(const Tensor& a, const Tensor& b) {
 
         size_t a_batch_size = m * n;
         size_t r_batch_size = m * p;
+
+#ifdef NKS_ENABLE_CUDA
+        if (gpu_backend::matmul_3d_2d(a_ptr, b_ptr, r_ptr, batch, m, n, p)) {
+            return result;
+        }
+#endif
 
         for (size_t b_idx = 0; b_idx < batch; ++b_idx) {
             const float* a_batch = a_ptr + b_idx * a_batch_size;
@@ -299,6 +312,12 @@ Tensor Tensor::matmul(const Tensor& a, const Tensor& b) {
         size_t a_batch_size = m * n;
         size_t b_batch_size = n * p;
         size_t r_batch_size = m * p;
+
+#ifdef NKS_ENABLE_CUDA
+        if (gpu_backend::matmul_3d_3d(a_ptr, b_ptr, r_ptr, batch, m, n, p)) {
+            return result;
+        }
+#endif
 
         for (size_t b_idx = 0; b_idx < batch; ++b_idx) {
             const float* a_batch = a_ptr + b_idx * a_batch_size;
@@ -410,6 +429,38 @@ Tensor Tensor::sigmoid(const Tensor& t) {
 Tensor Tensor::softmax(const Tensor& t, int axis) {
     int norm_axis = t.normalize_axis(axis);
     Tensor result = t;
+
+    if (norm_axis == static_cast<int>(t.ndim()) - 1 && t.ndim() >= 2) {
+        const size_t inner_size = t.shape_[t.ndim() - 1];
+        const size_t outer_size = t.size_ / inner_size;
+
+#ifdef NKS_ENABLE_CUDA
+        if (gpu_backend::softmax_last_dim(result.data_.data(), outer_size, inner_size)) {
+            return result;
+        }
+#endif
+
+        for (size_t i = 0; i < outer_size; ++i) {
+            float* row = result.data_.data() + i * inner_size;
+            float max_val = row[0];
+            for (size_t j = 1; j < inner_size; ++j) {
+                max_val = std::max(max_val, row[j]);
+            }
+
+            float sum = 0.0f;
+            for (size_t j = 0; j < inner_size; ++j) {
+                row[j] = std::exp(row[j] - max_val);
+                sum += row[j];
+            }
+
+            if (sum != 0.0f) {
+                for (size_t j = 0; j < inner_size; ++j) {
+                    row[j] /= sum;
+                }
+            }
+        }
+        return result;
+    }
     
     if (t.ndim() == 2 && norm_axis == 1) {
         // 2D softmax over last dimension
