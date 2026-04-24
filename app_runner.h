@@ -5,5 +5,8 @@ int runTokenizerApplication();
 int runCompressionExample();
 int runLLMExample();
 int runLLMTrainingExample();
+int runRealCorpusTrainingExample();
+int runLLMChatExample();
+int runChatModelEvaluationExample();
 
 #endif

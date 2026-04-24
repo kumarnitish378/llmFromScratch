@@ -24,6 +24,17 @@ A C++17 tokenizer project with a vocabulary-backed encoding pipeline.
 make
 ```
 
+## Optional CUDA Backend
+The default build is CPU-only and works without CUDA.
+
+To compile the optional CUDA tensor backend, install the NVIDIA CUDA Toolkit and build with:
+
+```bash
+make rebuild USE_CUDA=1
+```
+
+When enabled, `Tensor::matmul` and last-axis `Tensor::softmax` try CUDA kernels first and fall back to CPU if no CUDA device is available.
+
 ## Run
 ```bash
 make run

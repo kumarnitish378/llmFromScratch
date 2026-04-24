@@ -3,10 +3,16 @@
 #include <cmath>
 #include <cctype>
 #include <algorithm>
+#include <cstddef>
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
+#include <cstdint>
+#include <deque>
+#include <limits>
+#include <random>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
@@ -37,6 +43,24 @@ struct AppPaths {
     std::string sentencePieceTrainingPath = getEnvOrDefault("NKS_SP_TRAINING_PATH", "Data/processed");
     std::string bpeModelPath = getEnvOrDefault("NKS_BPE_MODEL_PATH", "Metadata/bpe_model_processed.bin");
     std::string mergedTxtCorpusPath = getEnvOrDefault("NKS_MERGED_TXT_CORPUS_PATH", "Metadata/processed_txt_corpus.txt");
+    std::string chatModelPath = getEnvOrDefault("NKS_CHAT_MODEL_PATH", "Metadata/llm_chat_ngram.bin");
+};
+
+struct TokenPairKey {
+    int first = -1;
+    int second = -1;
+
+    bool operator==(const TokenPairKey& other) const {
+        return first == other.first && second == other.second;
+    }
+};
+
+struct TokenPairKeyHash {
+    std::size_t operator()(const TokenPairKey& key) const {
+        const std::uint64_t a = static_cast<std::uint32_t>(key.first);
+        const std::uint64_t b = static_cast<std::uint32_t>(key.second);
+        return static_cast<std::size_t>((a << 32U) ^ b);
+    }
 };
 
 struct BpeRuntimeConfig {
@@ -58,6 +82,8 @@ enum class TokenizerMode {
 };
 
 constexpr double kApproxCharsPerToken = 4.0;
+constexpr std::size_t kDefaultChatTrainingLineLimit = 50000;
+constexpr std::size_t kChatGenerationTokens = 48;
 
 struct TokenizationResult {
     std::vector<std::string> pieces;
@@ -65,6 +91,282 @@ struct TokenizationResult {
     std::string decodedText;
     std::size_t approxModelTokenCount = 0;
     std::size_t vocabularySize = 0;
+};
+
+struct ChatNgramModel {
+    std::unordered_map<int, std::unordered_map<int, std::uint32_t>> transitions;
+    std::unordered_map<TokenPairKey, std::unordered_map<int, std::uint32_t>, TokenPairKeyHash> pairTransitions;
+    std::unordered_map<int, std::uint32_t> unigramCounts;
+    std::size_t vocabSize = 0;
+    std::size_t observedPairs = 0;
+    std::size_t observedTriples = 0;
+
+    void clear() {
+        transitions.clear();
+        pairTransitions.clear();
+        unigramCounts.clear();
+        vocabSize = 0;
+        observedPairs = 0;
+        observedTriples = 0;
+    }
+
+    void observe(const std::vector<int>& tokenIds, std::size_t tokenizerVocabSize) {
+        if (tokenIds.empty()) {
+            return;
+        }
+
+        vocabSize = std::max(vocabSize, tokenizerVocabSize);
+        int previousPrevious = -1;
+        int previous = -1;
+        for (int tokenId : tokenIds) {
+            if (tokenId < 0 || tokenId >= static_cast<int>(tokenizerVocabSize)) {
+                previous = -1;
+                continue;
+            }
+
+            ++unigramCounts[tokenId];
+            if (previous >= 0) {
+                ++transitions[previous][tokenId];
+                ++observedPairs;
+            }
+            if (previousPrevious >= 0 && previous >= 0) {
+                ++pairTransitions[TokenPairKey{previousPrevious, previous}][tokenId];
+                ++observedTriples;
+            }
+            previousPrevious = previous;
+            previous = tokenId;
+        }
+    }
+
+    bool empty() const {
+        return observedPairs == 0 || unigramCounts.empty();
+    }
+
+    int sampleFromCounts(
+        const std::unordered_map<int, std::uint32_t>& counts,
+        std::mt19937& gen,
+        const std::deque<int>& recent) const {
+        if (counts.empty()) {
+            return 0;
+        }
+
+        std::vector<int> ids;
+        std::vector<double> weights;
+        ids.reserve(counts.size());
+        weights.reserve(counts.size());
+
+        for (const auto& kv : counts) {
+            double weight = static_cast<double>(kv.second);
+            for (int recentToken : recent) {
+                if (recentToken == kv.first) {
+                    weight *= 0.35;
+                }
+            }
+            ids.push_back(kv.first);
+            weights.push_back(std::max(weight, 0.001));
+        }
+
+        std::discrete_distribution<std::size_t> dist(weights.begin(), weights.end());
+        return ids[dist(gen)];
+    }
+
+    std::vector<int> generate(const std::vector<int>& promptIds, std::size_t maxNewTokens) const {
+        if (empty()) {
+            return {};
+        }
+
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::vector<int> generated;
+        generated.reserve(maxNewTokens);
+
+        int previous = -1;
+        int current = -1;
+        for (auto it = promptIds.rbegin(); it != promptIds.rend(); ++it) {
+            if (*it >= 0 && *it < static_cast<int>(vocabSize)) {
+                if (current < 0) {
+                    current = *it;
+                } else {
+                    previous = *it;
+                    break;
+                }
+            }
+        }
+
+        std::deque<int> recent;
+        if (current >= 0) {
+            recent.push_back(current);
+        }
+
+        for (std::size_t i = 0; i < maxNewTokens; ++i) {
+            int nextToken = 0;
+            const auto pairIt = pairTransitions.find(TokenPairKey{previous, current});
+            if (pairIt != pairTransitions.end() && !pairIt->second.empty()) {
+                nextToken = sampleFromCounts(pairIt->second, gen, recent);
+            } else {
+                const auto transitionIt = transitions.find(current);
+                if (transitionIt != transitions.end() && !transitionIt->second.empty()) {
+                    nextToken = sampleFromCounts(transitionIt->second, gen, recent);
+                } else {
+                    nextToken = sampleFromCounts(unigramCounts, gen, recent);
+                }
+            }
+
+            generated.push_back(nextToken);
+            previous = current;
+            current = nextToken;
+            recent.push_back(nextToken);
+            if (recent.size() > 24) {
+                recent.pop_front();
+            }
+        }
+
+        return generated;
+    }
+
+    bool save(const std::string& path) const {
+        const std::size_t pos = path.find_last_of("/\\");
+        if (pos != std::string::npos) {
+            const std::string directory = path.substr(0, pos);
+#ifdef _WIN32
+            _mkdir(directory.c_str());
+#else
+            mkdir(directory.c_str(), 0755);
+#endif
+        }
+
+        std::ofstream out(path.c_str(), std::ios::binary);
+        if (!out.is_open()) {
+            return false;
+        }
+
+        const char magic[8] = {'N', 'K', 'S', 'N', 'G', 'R', 'M', '2'};
+        out.write(magic, sizeof(magic));
+
+        const std::uint64_t savedVocabSize = static_cast<std::uint64_t>(vocabSize);
+        const std::uint64_t savedObservedPairs = static_cast<std::uint64_t>(observedPairs);
+        const std::uint64_t savedObservedTriples = static_cast<std::uint64_t>(observedTriples);
+        const std::uint64_t unigramSize = static_cast<std::uint64_t>(unigramCounts.size());
+        const std::uint64_t transitionSize = static_cast<std::uint64_t>(transitions.size());
+        const std::uint64_t pairTransitionSize = static_cast<std::uint64_t>(pairTransitions.size());
+        out.write(reinterpret_cast<const char*>(&savedVocabSize), sizeof(savedVocabSize));
+        out.write(reinterpret_cast<const char*>(&savedObservedPairs), sizeof(savedObservedPairs));
+        out.write(reinterpret_cast<const char*>(&savedObservedTriples), sizeof(savedObservedTriples));
+        out.write(reinterpret_cast<const char*>(&unigramSize), sizeof(unigramSize));
+        out.write(reinterpret_cast<const char*>(&transitionSize), sizeof(transitionSize));
+        out.write(reinterpret_cast<const char*>(&pairTransitionSize), sizeof(pairTransitionSize));
+
+        for (const auto& kv : unigramCounts) {
+            const std::int32_t id = static_cast<std::int32_t>(kv.first);
+            const std::uint32_t count = kv.second;
+            out.write(reinterpret_cast<const char*>(&id), sizeof(id));
+            out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        }
+
+        for (const auto& row : transitions) {
+            const std::int32_t prev = static_cast<std::int32_t>(row.first);
+            const std::uint64_t rowSize = static_cast<std::uint64_t>(row.second.size());
+            out.write(reinterpret_cast<const char*>(&prev), sizeof(prev));
+            out.write(reinterpret_cast<const char*>(&rowSize), sizeof(rowSize));
+            for (const auto& kv : row.second) {
+                const std::int32_t next = static_cast<std::int32_t>(kv.first);
+                const std::uint32_t count = kv.second;
+                out.write(reinterpret_cast<const char*>(&next), sizeof(next));
+                out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            }
+        }
+
+        for (const auto& row : pairTransitions) {
+            const std::int32_t first = static_cast<std::int32_t>(row.first.first);
+            const std::int32_t second = static_cast<std::int32_t>(row.first.second);
+            const std::uint64_t rowSize = static_cast<std::uint64_t>(row.second.size());
+            out.write(reinterpret_cast<const char*>(&first), sizeof(first));
+            out.write(reinterpret_cast<const char*>(&second), sizeof(second));
+            out.write(reinterpret_cast<const char*>(&rowSize), sizeof(rowSize));
+            for (const auto& kv : row.second) {
+                const std::int32_t next = static_cast<std::int32_t>(kv.first);
+                const std::uint32_t count = kv.second;
+                out.write(reinterpret_cast<const char*>(&next), sizeof(next));
+                out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            }
+        }
+
+        return out.good();
+    }
+
+    bool load(const std::string& path) {
+        clear();
+        std::ifstream in(path.c_str(), std::ios::binary);
+        if (!in.is_open()) {
+            return false;
+        }
+
+        char magic[8] = {};
+        in.read(magic, sizeof(magic));
+        const char expected[8] = {'N', 'K', 'S', 'N', 'G', 'R', 'M', '2'};
+        if (!std::equal(magic, magic + sizeof(magic), expected)) {
+            return false;
+        }
+
+        std::uint64_t savedVocabSize = 0;
+        std::uint64_t savedObservedPairs = 0;
+        std::uint64_t savedObservedTriples = 0;
+        std::uint64_t unigramSize = 0;
+        std::uint64_t transitionSize = 0;
+        std::uint64_t pairTransitionSize = 0;
+        in.read(reinterpret_cast<char*>(&savedVocabSize), sizeof(savedVocabSize));
+        in.read(reinterpret_cast<char*>(&savedObservedPairs), sizeof(savedObservedPairs));
+        in.read(reinterpret_cast<char*>(&savedObservedTriples), sizeof(savedObservedTriples));
+        in.read(reinterpret_cast<char*>(&unigramSize), sizeof(unigramSize));
+        in.read(reinterpret_cast<char*>(&transitionSize), sizeof(transitionSize));
+        in.read(reinterpret_cast<char*>(&pairTransitionSize), sizeof(pairTransitionSize));
+
+        vocabSize = static_cast<std::size_t>(savedVocabSize);
+        observedPairs = static_cast<std::size_t>(savedObservedPairs);
+        observedTriples = static_cast<std::size_t>(savedObservedTriples);
+
+        for (std::uint64_t i = 0; i < unigramSize; ++i) {
+            std::int32_t id = 0;
+            std::uint32_t count = 0;
+            in.read(reinterpret_cast<char*>(&id), sizeof(id));
+            in.read(reinterpret_cast<char*>(&count), sizeof(count));
+            unigramCounts[static_cast<int>(id)] = count;
+        }
+
+        for (std::uint64_t i = 0; i < transitionSize; ++i) {
+            std::int32_t prev = 0;
+            std::uint64_t rowSize = 0;
+            in.read(reinterpret_cast<char*>(&prev), sizeof(prev));
+            in.read(reinterpret_cast<char*>(&rowSize), sizeof(rowSize));
+            auto& row = transitions[static_cast<int>(prev)];
+            for (std::uint64_t j = 0; j < rowSize; ++j) {
+                std::int32_t next = 0;
+                std::uint32_t count = 0;
+                in.read(reinterpret_cast<char*>(&next), sizeof(next));
+                in.read(reinterpret_cast<char*>(&count), sizeof(count));
+                row[static_cast<int>(next)] = count;
+            }
+        }
+
+        for (std::uint64_t i = 0; i < pairTransitionSize; ++i) {
+            std::int32_t first = 0;
+            std::int32_t second = 0;
+            std::uint64_t rowSize = 0;
+            in.read(reinterpret_cast<char*>(&first), sizeof(first));
+            in.read(reinterpret_cast<char*>(&second), sizeof(second));
+            in.read(reinterpret_cast<char*>(&rowSize), sizeof(rowSize));
+            auto& row = pairTransitions[TokenPairKey{static_cast<int>(first), static_cast<int>(second)}];
+            for (std::uint64_t j = 0; j < rowSize; ++j) {
+                std::int32_t next = 0;
+                std::uint32_t count = 0;
+                in.read(reinterpret_cast<char*>(&next), sizeof(next));
+                in.read(reinterpret_cast<char*>(&count), sizeof(count));
+                row[static_cast<int>(next)] = count;
+            }
+        }
+
+        return in.good();
+    }
 };
 
 void printBpeTrainingStats(const NKS_Tokenizer::TrainingStats& stats) {
@@ -504,6 +806,115 @@ std::string readInputTextFromTerminal() {
     std::getline(std::cin, inputText);
     return inputText;
 }
+
+std::vector<int> clampTokenIdsToModelVocab(const std::vector<int>& tokenIds, std::size_t vocabSize) {
+    std::vector<int> clamped;
+    clamped.reserve(tokenIds.size());
+
+    const int safeVocab = static_cast<int>(std::max<std::size_t>(vocabSize, 1));
+    for (int tokenId : tokenIds) {
+        if (tokenId < 0) {
+            clamped.push_back(0);
+            continue;
+        }
+        clamped.push_back(tokenId % safeVocab);
+    }
+
+    return clamped;
+}
+
+void printGeneratedTokenIds(const std::vector<int>& tokenIds) {
+    std::cout << "LLM token IDs: [";
+    for (std::size_t i = 0; i < tokenIds.size(); ++i) {
+        if (i > 0) {
+            std::cout << ", ";
+        }
+        std::cout << tokenIds[i];
+    }
+    std::cout << "]" << std::endl;
+}
+
+std::size_t readSizeFromTerminal(const std::string& prompt, std::size_t fallback) {
+    std::cout << prompt << " (default=" << fallback << "): ";
+    std::string value;
+    std::getline(std::cin, value);
+    if (value.empty()) {
+        return fallback;
+    }
+
+    try {
+        const std::size_t parsed = static_cast<std::size_t>(std::stoull(value));
+        return parsed == 0 ? fallback : parsed;
+    } catch (...) {
+        std::cerr << "Invalid number. Using default: " << fallback << std::endl;
+        return fallback;
+    }
+}
+
+bool trainChatModelFromCorpus(
+    ChatNgramModel& chatModel,
+    NKS_Tokenizer& tokenizer,
+    const std::string& corpusPath,
+    std::size_t epochs,
+    std::size_t lineLimit) {
+    const std::size_t tokenizerVocabSize = tokenizer.vocabularySize();
+    if (tokenizerVocabSize == 0) {
+        std::cerr << "Tokenizer vocabulary is empty." << std::endl;
+        return false;
+    }
+
+    chatModel.clear();
+    chatModel.vocabSize = tokenizerVocabSize;
+
+    for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
+        std::ifstream in(corpusPath.c_str());
+        if (!in.is_open()) {
+            std::cerr << "Failed to open training corpus: " << corpusPath << std::endl;
+            return false;
+        }
+
+        std::string line;
+        std::size_t linesRead = 0;
+        std::size_t tokensSeen = 0;
+        while (std::getline(in, line)) {
+            if (line.empty()) {
+                continue;
+            }
+
+            std::vector<int> tokenIds = tokenizer.encode(line);
+            tokensSeen += tokenIds.size();
+            chatModel.observe(tokenIds, tokenizerVocabSize);
+
+            ++linesRead;
+            if (linesRead % 1000 == 0) {
+                std::cout << "\r  Epoch " << (epoch + 1) << "/" << epochs
+                          << " | lines=" << linesRead
+                          << " | tokens=" << tokensSeen
+                          << " | pairs=" << chatModel.observedPairs << std::flush;
+            }
+
+            if (lineLimit > 0 && linesRead >= lineLimit) {
+                break;
+            }
+        }
+
+        std::cout << "\r  Epoch " << (epoch + 1) << "/" << epochs
+                  << " completed | lines=" << linesRead
+                  << " | tokens=" << tokensSeen
+                  << " | pairs=" << chatModel.observedPairs
+                  << " | triples=" << chatModel.observedTriples
+                  << "                    " << std::endl;
+    }
+
+    return !chatModel.empty();
+}
+
+void printChatModelSample(ChatNgramModel& chatModel, NKS_Tokenizer& tokenizer, const std::string& prompt) {
+    const std::vector<int> promptIds = tokenizer.encode(prompt);
+    const std::vector<int> sampleIds = chatModel.generate(promptIds, kChatGenerationTokens);
+    std::cout << "\nPrompt> " << prompt << std::endl;
+    std::cout << "Model> " << tokenizer.decode(sampleIds) << std::endl;
+}
 } // namespace
 
 int runTokenizerApplication() {
@@ -598,6 +1009,11 @@ int runLLMExample() {
     std::cout << "  - Embedding dim: " << config.embedding_dim << std::endl;
     std::cout << "  - Num layers: " << config.num_layers << std::endl;
     std::cout << "  - Num heads: " << config.num_heads << std::endl;
+    std::cout << "  - Compute backend: " << gpu_backend::backend_name();
+    if (!gpu_backend::is_available()) {
+        std::cout << " (GPU unavailable or CUDA support not compiled)";
+    }
+    std::cout << std::endl;
     
     LLMModel model(config);
     std::cout << "  - Total parameters: " << model.num_parameters() / 1e6 << "M" << std::endl;
@@ -706,6 +1122,11 @@ int runLLMTrainingExample() {
     std::cout << "  - Num layers: " << config.num_layers << std::endl;
     std::cout << "  - Learning rate: " << config.learning_rate << std::endl;
     std::cout << "  - Weight decay: " << config.weight_decay << std::endl;
+    std::cout << "  - Compute backend: " << gpu_backend::backend_name();
+    if (!gpu_backend::is_available()) {
+        std::cout << " (GPU unavailable or CUDA support not compiled)";
+    }
+    std::cout << std::endl;
     
     LLMModel model(config);
     std::cout << "  - Total parameters: " << model.num_parameters() / 1e6 << "M" << std::endl;
@@ -840,5 +1261,257 @@ int runLLMTrainingExample() {
     std::cout << "✓ Model ready for generation and fine-tuning" << std::endl;
     std::cout << "========================================\n" << std::endl;
     
+    return 0;
+}
+
+int runRealCorpusTrainingExample() {
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "   Real Corpus Next-Token Training" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+
+    const AppPaths paths;
+
+    std::cout << "[1] Loading tokenizer..." << std::endl;
+    NKS_Tokenizer tokenizer = createBpeTokenizer();
+    if (!loadOrTrainBpeModelOrReport(
+            tokenizer,
+            paths.bpeTrainingPath,
+            paths.bpeModelPath,
+            paths.mergedTxtCorpusPath)) {
+        return 1;
+    }
+
+    std::string corpusPath;
+    if (!resolveTrainingCorpusPath(paths.bpeTrainingPath, paths.mergedTxtCorpusPath, corpusPath)) {
+        std::cerr << "Failed to resolve training corpus from: " << paths.bpeTrainingPath << std::endl;
+        return 1;
+    }
+
+    std::cout << "  - Tokenizer vocabulary size: " << tokenizer.vocabularySize() << std::endl;
+    std::cout << "  - Training corpus: " << corpusPath << std::endl;
+    std::cout << "\nThis trains a real next-token model from corpus token IDs and saves it for chat." << std::endl;
+
+    const std::size_t epochs = readSizeFromTerminal("\nEnter epochs", 10);
+    const std::size_t lineLimit = readSizeFromTerminal(
+        "Enter max lines per epoch, 0 for full corpus",
+        kDefaultChatTrainingLineLimit);
+
+    std::cout << "\n[2] Training..." << std::endl;
+    ChatNgramModel chatModel;
+    if (!trainChatModelFromCorpus(chatModel, tokenizer, corpusPath, epochs, lineLimit)) {
+        std::cerr << "Training failed or produced no token pairs." << std::endl;
+        return 1;
+    }
+
+    std::cout << "\n[3] Saving trained chat model..." << std::endl;
+    if (!chatModel.save(paths.chatModelPath)) {
+        std::cerr << "Failed to save chat model: " << paths.chatModelPath << std::endl;
+        return 1;
+    }
+
+    const std::vector<int> testPrompt = tokenizer.encode("how are you");
+    const std::vector<int> sampleIds = chatModel.generate(testPrompt, 24);
+    std::cout << "  - Saved: " << paths.chatModelPath << std::endl;
+    std::cout << "  - Sample prompt: how are you" << std::endl;
+    std::cout << "  - Sample output: " << tokenizer.decode(sampleIds) << std::endl;
+
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "   Training Summary" << std::endl;
+    std::cout << "========================================" << std::endl;
+    std::cout << "Trained for " << epochs << " epochs" << std::endl;
+    std::cout << "Observed token pairs: " << chatModel.observedPairs << std::endl;
+    std::cout << "Observed token triples: " << chatModel.observedTriples << std::endl;
+    std::cout << "Transition rows: " << chatModel.transitions.size() << std::endl;
+    std::cout << "Pair transition rows: " << chatModel.pairTransitions.size() << std::endl;
+    std::cout << "Saved chat model: " << paths.chatModelPath << std::endl;
+    std::cout << "========================================\n" << std::endl;
+
+    return 0;
+}
+
+int runLLMChatExample() {
+    using namespace nks_llm;
+
+    const AppPaths paths;
+
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "        LLM Terminal Chat" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+
+    std::cout << "[1] Loading tokenizer..." << std::endl;
+    NKS_Tokenizer tokenizer = createBpeTokenizer();
+    if (!loadOrTrainBpeModelOrReport(
+            tokenizer,
+            paths.bpeTrainingPath,
+            paths.bpeModelPath,
+            paths.mergedTxtCorpusPath)) {
+        return 1;
+    }
+    std::cout << "  - Tokenizer vocabulary size: " << tokenizer.vocabularySize() << std::endl;
+
+    std::cout << "\n[2] Creating model..." << std::endl;
+    ModelConfig config = ModelConfig::get_small_model();
+    config.batch_size = 1;
+    config.max_seq_length = 128;
+    config.temperature = 1.2f;
+    config.top_k = 40;
+
+    std::cout << "  - Model vocabulary size: " << config.vocab_size << std::endl;
+    std::cout << "  - Max sequence length: " << config.max_seq_length << std::endl;
+    std::cout << "  - Compute backend: " << gpu_backend::backend_name();
+    if (!gpu_backend::is_available()) {
+        std::cout << " (GPU unavailable or CUDA support not compiled)";
+    }
+    std::cout << std::endl;
+
+    LLMModel model(config);
+
+    const std::string trainedCheckpointPath = "Metadata/llm_trained_checkpoint.bin";
+    const std::string demoCheckpointPath = "Metadata/llm_checkpoint.bin";
+    std::ifstream trainedCheckpoint(trainedCheckpointPath.c_str(), std::ios::binary);
+    std::ifstream demoCheckpoint(demoCheckpointPath.c_str(), std::ios::binary);
+
+    if (trainedCheckpoint.good() && model.load(trainedCheckpointPath)) {
+        std::cout << "  - Loaded checkpoint: " << trainedCheckpointPath << std::endl;
+    } else if (demoCheckpoint.good() && model.load(demoCheckpointPath)) {
+        std::cout << "  - Loaded checkpoint: " << demoCheckpointPath << std::endl;
+    } else {
+        std::cout << "  - No checkpoint found. Using randomly initialized weights." << std::endl;
+    }
+
+    ChatNgramModel chatModel;
+    const bool hasRealChatModel = chatModel.load(paths.chatModelPath) && !chatModel.empty();
+    if (hasRealChatModel) {
+        std::cout << "  - Loaded real corpus chat model: " << paths.chatModelPath << std::endl;
+        std::cout << "  - Chat token pairs: " << chatModel.observedPairs << std::endl;
+        std::cout << "  - Chat token triples: " << chatModel.observedTriples << std::endl;
+    } else {
+        std::cout << "  - No real corpus chat model found. Run option 4 to train one." << std::endl;
+    }
+
+    std::cout << "\nType your message and press Enter. Press Ctrl+C to stop." << std::endl;
+    if (hasRealChatModel) {
+        std::cout << "Using real corpus next-token model for chat.\n" << std::endl;
+    } else {
+        std::cout << "Note: falling back to the transformer prototype, so responses may look rough.\n"
+                  << std::endl;
+    }
+
+    std::string line;
+    while (true) {
+        std::cout << "You> ";
+        if (!std::getline(std::cin, line)) {
+            std::cout << std::endl;
+            break;
+        }
+
+        if (line.empty()) {
+            continue;
+        }
+
+        std::vector<int> promptIds = tokenizer.encode(line);
+        if (promptIds.empty()) {
+            std::cout << "Model> [no tokens produced]\n" << std::endl;
+            continue;
+        }
+
+        if (hasRealChatModel) {
+            try {
+                const std::vector<int> newTokenIds = chatModel.generate(promptIds, kChatGenerationTokens);
+                const std::string response = tokenizer.decode(newTokenIds);
+                if (response.empty()) {
+                    std::cout << "Model> [empty decoded response]" << std::endl;
+                } else {
+                    std::cout << "Model> " << response << std::endl;
+                }
+                printGeneratedTokenIds(newTokenIds);
+                std::cout << std::endl;
+            } catch (const std::exception& ex) {
+                std::cerr << "Model error: " << ex.what() << "\n" << std::endl;
+            }
+            continue;
+        }
+
+        std::vector<int> modelPromptIds = clampTokenIdsToModelVocab(promptIds, config.vocab_size);
+        if (modelPromptIds.size() > config.max_seq_length) {
+            modelPromptIds.erase(
+                modelPromptIds.begin(),
+                modelPromptIds.end() - static_cast<std::ptrdiff_t>(config.max_seq_length));
+        }
+
+        try {
+            const std::size_t maxNewTokens = 32;
+            std::vector<int> generated = model.generate(modelPromptIds, maxNewTokens);
+            std::vector<int> newTokenIds;
+            if (generated.size() > modelPromptIds.size()) {
+                newTokenIds.assign(generated.begin() + static_cast<std::ptrdiff_t>(modelPromptIds.size()),
+                                   generated.end());
+            }
+
+            std::string response = tokenizer.decode(newTokenIds);
+            if (response.empty()) {
+                std::cout << "Model> [empty decoded response]" << std::endl;
+            } else {
+                std::cout << "Model> " << response << std::endl;
+            }
+            printGeneratedTokenIds(newTokenIds);
+            std::cout << std::endl;
+        } catch (const std::exception& ex) {
+            std::cerr << "Model error: " << ex.what() << "\n" << std::endl;
+        }
+    }
+
+    std::cout << "Chat ended." << std::endl;
+    return 0;
+}
+
+int runChatModelEvaluationExample() {
+    const AppPaths paths;
+
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "        Chat Model Evaluation" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+
+    NKS_Tokenizer tokenizer = createBpeTokenizer();
+    if (!loadOrTrainBpeModelOrReport(
+            tokenizer,
+            paths.bpeTrainingPath,
+            paths.bpeModelPath,
+            paths.mergedTxtCorpusPath)) {
+        return 1;
+    }
+
+    ChatNgramModel chatModel;
+    if (!chatModel.load(paths.chatModelPath) || chatModel.empty()) {
+        std::cerr << "No real corpus chat model found at " << paths.chatModelPath
+                  << ". Run option 4 first." << std::endl;
+        return 1;
+    }
+
+    std::cout << "Loaded: " << paths.chatModelPath << std::endl;
+    std::cout << "Observed token pairs: " << chatModel.observedPairs << std::endl;
+    std::cout << "Observed token triples: " << chatModel.observedTriples << std::endl;
+    std::cout << "Transition rows: " << chatModel.transitions.size() << std::endl;
+    std::cout << "Pair transition rows: " << chatModel.pairTransitions.size() << std::endl;
+
+    printChatModelSample(chatModel, tokenizer, "how are you");
+    printChatModelSample(chatModel, tokenizer, "what is your name");
+    printChatModelSample(chatModel, tokenizer, "tell me about language models");
+    printChatModelSample(chatModel, tokenizer, "write a short answer");
+
+    std::cout << "\nEnter custom prompts. Press Ctrl+C or EOF to stop.\n" << std::endl;
+    std::string prompt;
+    while (true) {
+        std::cout << "Prompt> ";
+        if (!std::getline(std::cin, prompt)) {
+            std::cout << std::endl;
+            break;
+        }
+        if (prompt.empty()) {
+            continue;
+        }
+        printChatModelSample(chatModel, tokenizer, prompt);
+    }
+
     return 0;
 }

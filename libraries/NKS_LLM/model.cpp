@@ -422,32 +422,59 @@ std::vector<int> LLMModel::generate(const std::vector<int>& prompt, size_t max_n
         size_t last_pos = input_slice.size() - 1;
         const float* last_logits = logits.data() + last_pos * config_.vocab_size;
         
-        // Apply temperature
+        // Apply temperature and a light repetition penalty so generation does not
+        // collapse immediately to the same token under weak prototype weights.
+        const float temperature = std::max(config_.temperature, 1e-5f);
         std::vector<float> adjusted_logits(config_.vocab_size);
         for (size_t v = 0; v < config_.vocab_size; ++v) {
-            adjusted_logits[v] = last_logits[v] / config_.temperature;
+            adjusted_logits[v] = last_logits[v] / temperature;
         }
-        
-        // Apply softmax
-        float max_logit = *std::max_element(adjusted_logits.begin(), adjusted_logits.end());
-        float sum_exp = 0.0f;
-        std::vector<float> probs(config_.vocab_size);
-        for (size_t v = 0; v < config_.vocab_size; ++v) {
-            probs[v] = std::exp(adjusted_logits[v] - max_logit);
-            sum_exp += probs[v];
-        }
-        for (size_t v = 0; v < config_.vocab_size; ++v) {
-            probs[v] /= sum_exp;
-        }
-        
-        // Sample next token (greedy for now, could add top-k/nucleus sampling)
-        int next_token = 0;
-        float max_prob = probs[0];
-        for (size_t v = 1; v < config_.vocab_size; ++v) {
-            if (probs[v] > max_prob) {
-                max_prob = probs[v];
-                next_token = v;
+
+        const size_t repetition_window = std::min<size_t>(sequence.size(), 32);
+        for (size_t r = 0; r < repetition_window; ++r) {
+            const int token_id = sequence[sequence.size() - 1 - r];
+            if (token_id < 0 || token_id >= static_cast<int>(config_.vocab_size)) {
+                continue;
             }
+
+            float& logit = adjusted_logits[static_cast<size_t>(token_id)];
+            if (logit > 0.0f) {
+                logit /= 1.2f;
+            } else {
+                logit *= 1.2f;
+            }
+        }
+
+        // Sample from top-k candidates instead of greedy argmax.
+        const size_t top_k = std::min(
+            config_.top_k == 0 ? config_.vocab_size : config_.top_k,
+            config_.vocab_size);
+
+        std::vector<size_t> candidates(config_.vocab_size);
+        std::iota(candidates.begin(), candidates.end(), size_t{0});
+        std::partial_sort(
+            candidates.begin(),
+            candidates.begin() + static_cast<std::ptrdiff_t>(top_k),
+            candidates.end(),
+            [&](size_t lhs, size_t rhs) {
+                return adjusted_logits[lhs] > adjusted_logits[rhs];
+            });
+
+        float max_logit = adjusted_logits[candidates[0]];
+        for (size_t i = 1; i < top_k; ++i) {
+            max_logit = std::max(max_logit, adjusted_logits[candidates[i]]);
+        }
+
+        std::vector<double> weights(top_k, 0.0);
+        for (size_t i = 0; i < top_k; ++i) {
+            weights[i] = static_cast<double>(std::exp(adjusted_logits[candidates[i]] - max_logit));
+        }
+
+        int next_token = static_cast<int>(candidates[0]);
+        const double total_weight = std::accumulate(weights.begin(), weights.end(), 0.0);
+        if (total_weight > 0.0) {
+            std::discrete_distribution<size_t> sample_dist(weights.begin(), weights.end());
+            next_token = static_cast<int>(candidates[sample_dist(gen)]);
         }
         
         sequence.push_back(next_token);

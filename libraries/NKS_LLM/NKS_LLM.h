@@ -9,5 +9,6 @@
  */
 
 #include "tensor.h"
+#include "gpu_backend.h"
 #include "layers.h"
 #include "model.h"
