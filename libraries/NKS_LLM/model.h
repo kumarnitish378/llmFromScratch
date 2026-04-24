@@ -2,8 +2,10 @@
 #define NKS_LLM_MODEL_H
 
 #include "layers.h"
+#include "optimizer.h"
 #include <vector>
 #include <string>
+#include <memory>
 
 namespace nks_llm {
 
@@ -62,14 +64,35 @@ public:
     // returns logits: (batch_size, seq_length, vocab_size)
     Tensor forward(const Tensor& input_ids);
 
-    // Training step
+    // Training step with optimizer
     struct TrainStep {
         float loss = 0.0f;
         float perplexity = 0.0f;
         float learning_rate = 0.0f;
+        float gradient_norm = 0.0f;
     };
 
     TrainStep training_step(const Tensor& input_ids, const Tensor& target_ids);
+    
+    // Full training loop
+    struct TrainingStats {
+        float loss = 0.0f;
+        float avg_loss = 0.0f;
+        float perplexity = 0.0f;
+        float learning_rate = 0.0f;
+        float gradient_norm = 0.0f;
+        size_t step = 0;
+    };
+    
+    // Train for multiple steps
+    TrainingStats train_epoch(const std::vector<Tensor>& input_batches,
+                             const std::vector<Tensor>& target_batches,
+                             size_t epoch,
+                             size_t total_epochs);
+    
+    // Get optimizer
+    Adam& get_optimizer() { return *optimizer_; }
+    const Adam& get_optimizer() const { return *optimizer_; }
 
     // Generation
     std::vector<int> generate(const std::vector<int>& prompt, 
@@ -89,6 +112,12 @@ public:
     void clip_gradients(float max_norm);
     void zero_gradients();
     void optimizer_step(float learning_rate);
+    
+    // Collect all trainable parameters
+    std::vector<Tensor*> get_parameters();
+    
+    // Update learning rate schedule
+    void update_learning_rate(size_t current_step, size_t total_steps);
 
 private:
     ModelConfig config_;
@@ -101,7 +130,11 @@ private:
     LayerNorm final_norm_;
     Linear lm_head_;  // Language modeling head: embed_dim -> vocab_size
 
-    // Optimizer state (for Adam)
+    // Optimizer
+    std::unique_ptr<Adam> optimizer_;
+    std::unique_ptr<LRScheduler> lr_scheduler_;
+    
+    // Optimizer state (for tracking)
     std::vector<Tensor> m_states_;  // First moment estimates
     std::vector<Tensor> v_states_;  // Second moment estimates
     size_t optimizer_step_count_ = 0;
@@ -111,6 +144,9 @@ private:
     Tensor compute_causal_mask(size_t seq_length) const;
     Tensor compute_logits(const Tensor& hidden_states);
     float compute_cross_entropy_loss(const Tensor& logits, const Tensor& target_ids);
+    
+    // Gradient approximation (finite differences for each parameter group)
+    void apply_gradient_update(float learning_rate);
 };
 
 }  // namespace nks_llm

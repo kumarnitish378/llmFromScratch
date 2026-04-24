@@ -11,7 +11,8 @@ int main() {
     std::cout << "  1. Tokenizer Demo" << std::endl;
     std::cout << "  2. Compression Demo" << std::endl;
     std::cout << "  3. LLM Model Demo" << std::endl;
-    std::cout << "\nEnter choice [1-3] (default=3): ";
+    std::cout << "  4. LLM Training Loop" << std::endl;
+    std::cout << "\nEnter choice [1-4] (default=3): ";
 
     std::string choice;
     std::getline(std::cin, choice);
@@ -27,6 +28,8 @@ int main() {
         result = runCompressionExample();
     } else if (choice == "3") {
         result = runLLMExample();
+    } else if (choice == "4") {
+        result = runLLMTrainingExample();
     } else {
         std::cerr << "Invalid choice." << std::endl;
     }

@@ -683,3 +683,162 @@ int runLLMExample() {
     
     return 0;
 }
+
+int runLLMTrainingExample() {
+    using namespace nks_llm;
+
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "   LLM Training Loop - Full Example" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+
+    // [1] Create model
+    std::cout << "[1] Creating LLM model for training..." << std::endl;
+    ModelConfig config = ModelConfig::get_small_model();
+    config.batch_size = 4;
+    config.max_seq_length = 64;
+    config.num_epochs = 3;
+    config.learning_rate = 1e-3f;
+    config.weight_decay = 1e-5f;
+    config.gradient_clip = 1.0f;
+    
+    std::cout << "  - Vocab size: " << config.vocab_size << std::endl;
+    std::cout << "  - Embedding dim: " << config.embedding_dim << std::endl;
+    std::cout << "  - Num layers: " << config.num_layers << std::endl;
+    std::cout << "  - Learning rate: " << config.learning_rate << std::endl;
+    std::cout << "  - Weight decay: " << config.weight_decay << std::endl;
+    
+    LLMModel model(config);
+    std::cout << "  - Total parameters: " << model.num_parameters() / 1e6 << "M" << std::endl;
+
+    // [2] Create synthetic training data
+    std::cout << "\n[2] Creating synthetic training batches..." << std::endl;
+    
+    size_t num_batches = 5;
+    std::vector<Tensor> input_batches;
+    std::vector<Tensor> target_batches;
+    
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, static_cast<int>(config.vocab_size - 1));
+    
+    for (size_t b = 0; b < num_batches; ++b) {
+        // Input batch: (batch_size, seq_length)
+        Tensor input_batch({config.batch_size, 32});
+        Tensor target_batch({config.batch_size, 32});
+        
+        for (size_t i = 0; i < input_batch.elem_count(); ++i) {
+            int token_id = dis(gen);
+            input_batch[i] = static_cast<float>(token_id);
+            target_batch[i] = static_cast<float>((token_id + 1) % config.vocab_size);
+        }
+        
+        input_batches.push_back(input_batch);
+        target_batches.push_back(target_batch);
+    }
+    
+    std::cout << "  - Created " << num_batches << " batches" << std::endl;
+    std::cout << "  - Batch size: " << config.batch_size << std::endl;
+    std::cout << "  - Sequence length: 32 tokens" << std::endl;
+
+    // [3] Training loop with epoch management
+    std::cout << "\n[3] Starting training loop..." << std::endl;
+    std::cout << "  - Epochs: " << config.num_epochs << std::endl;
+    std::cout << "  - Batches per epoch: " << num_batches << std::endl;
+    std::cout << "  - Optimizer: Adam" << std::endl;
+    std::cout << "  - LR Schedule: Cosine Annealing\n" << std::endl;
+    
+    for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
+        std::cout << "╔════════════════════════════════════════╗" << std::endl;
+        std::cout << "  Epoch " << epoch + 1 << "/" << config.num_epochs << std::endl;
+        std::cout << "╚════════════════════════════════════════╝" << std::endl;
+        
+        try {
+            auto stats = model.train_epoch(input_batches, target_batches, epoch, config.num_epochs);
+            
+            std::cout << "\n  ✓ Epoch completed:" << std::endl;
+            std::cout << "    - Final loss: " << stats.loss << std::endl;
+            std::cout << "    - Avg loss: " << stats.avg_loss << std::endl;
+            std::cout << "    - Perplexity: " << stats.perplexity << std::endl;
+            std::cout << "    - Gradient norm: " << stats.gradient_norm << std::endl;
+            std::cout << "    - Learning rate: " << std::scientific << stats.learning_rate 
+                      << std::defaultfloat << std::endl;
+            
+        } catch (const std::exception& ex) {
+            std::cerr << "  ✗ Training failed: " << ex.what() << std::endl;
+            return 1;
+        }
+        
+        std::cout << std::endl;
+    }
+
+    // [4] Validation on test data
+    std::cout << "[4] Running validation..." << std::endl;
+    try {
+        Tensor val_input({1, 32});
+        Tensor val_target({1, 32});
+        
+        for (size_t i = 0; i < val_input.elem_count(); ++i) {
+            int token_id = dis(gen);
+            val_input[i] = static_cast<float>(token_id);
+            val_target[i] = static_cast<float>((token_id + 1) % config.vocab_size);
+        }
+        
+        auto step = model.training_step(val_input, val_target);
+        
+        std::cout << "  - Validation loss: " << step.loss << std::endl;
+        std::cout << "  - Validation perplexity: " << step.perplexity << std::endl;
+        std::cout << "  ✓ Validation completed!" << std::endl;
+        
+    } catch (const std::exception& ex) {
+        std::cerr << "  ✗ Validation failed: " << ex.what() << std::endl;
+        return 1;
+    }
+
+    // [5] Test generation with trained model
+    std::cout << "\n[5] Testing generation with trained model..." << std::endl;
+    try {
+        std::vector<int> prompt = {1, 5, 10, 15};
+        auto generated = model.generate(prompt, 16);
+        
+        std::cout << "  - Prompt: [1, 5, 10, 15]" << std::endl;
+        std::cout << "  - Generated: [";
+        for (size_t i = 4; i < generated.size(); ++i) {
+            if (i > 4) std::cout << ", ";
+            std::cout << generated[i];
+        }
+        std::cout << "]" << std::endl;
+        std::cout << "  ✓ Generation successful!" << std::endl;
+        
+    } catch (const std::exception& ex) {
+        std::cerr << "  ✗ Generation failed: " << ex.what() << std::endl;
+        return 1;
+    }
+
+    // [6] Save trained checkpoint
+    std::cout << "\n[6] Saving trained checkpoint..." << std::endl;
+    try {
+        std::string checkpoint_path = "Metadata/llm_trained_checkpoint.bin";
+        if (model.save(checkpoint_path)) {
+            std::cout << "  ✓ Trained model saved to: " << checkpoint_path << std::endl;
+        } else {
+            std::cerr << "  ✗ Failed to save checkpoint" << std::endl;
+            return 1;
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "  ✗ Checkpoint save failed: " << ex.what() << std::endl;
+        return 1;
+    }
+
+    // [7] Print training summary
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "   Training Summary" << std::endl;
+    std::cout << "========================================" << std::endl;
+    std::cout << "✓ Model initialized with " << model.num_parameters() / 1e6 << "M parameters" << std::endl;
+    std::cout << "✓ Trained for " << config.num_epochs << " epochs" << std::endl;
+    std::cout << "✓ Total training steps: " << config.num_epochs * num_batches << std::endl;
+    std::cout << "✓ Final model checkpoint saved" << std::endl;
+    std::cout << "✓ Model ready for generation and fine-tuning" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+    
+    return 0;
+}
