@@ -48,3 +48,24 @@ make clean
 ## Design Notes
 - The main pipeline is split into small single-responsibility stages.
 - Compute and reporting concerns are separated to keep future GPU parallelization straightforward.
+
+
+## Recursive Crawl4AI data pipeline (Windows)
+
+The bounded collector and cleaner are in `data_pipeline/`. Before crawling, edit `data_pipeline/crawl_config.yaml`: replace the example seed/domain with websites you are allowed to crawl and use. Check robots.txt, terms, and licenses first. The pipeline records provenance and does not assume public pages are licensed for model training.
+
+Open PowerShell in the repository folder:
+
+```powershell
+# One-time Python environment setup is performed by the runner if needed.
+Set-ExecutionPolicy -Scope Process Bypass
+.\run_overnight.ps1 -Mode smoke-test
+.\run_overnight.ps1 -Mode crawl -MaxPages 10 -MaxHours 0.25 -DryRun
+# After editing the config and reviewing the dry run:
+.\run_overnight.ps1 -Mode pipeline -MaxPages 100 -MaxHours 1 -MaxRamGB 6 -MaxDiskGB 5 -Resume
+.\run_overnight.ps1 -Mode status
+```
+
+The pipeline mode crawls, cleans/deduplicates, then invokes the existing corpus n-gram chat trainer for one epoch. **It does not train the Transformer.** The current C++ corpus chat model is an n-gram continuation baseline; a real neural training integration and Transformer gradient/attention fixes remain separate work. The chat path no longer silently falls back to randomly initialized Transformer weights when n-gram generation is too short, and it abstains on responses with no meaningful prompt-word overlap. This lexical guard is only a safety heuristic, not semantic understanding.
+
+Use `-Mode crawl` to resume an interrupted collection, `-Mode process` to rebuild cleaned output from saved raw JSONL, `-Mode train` to train the existing n-gram chat baseline from Data/clean_training_corpus.txt, and `-Mode status` to inspect the persistent queue. Start small before leaving a long job overnight.

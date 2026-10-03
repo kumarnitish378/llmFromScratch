@@ -1969,20 +1969,9 @@ static bool isSemanticCollision(const std::string& prompt, const std::string& re
         }
     }
 
-    if (!hasOverlap) {
-        static const std::vector<std::string> collisionTopics = {
-            "binary tree", "linked list", "bjarne stroustrup", "transformer",
-            "byte pair encoding", "sentencepiece", "self-attention", "huffman",
-            "lz77", "cross-entropy", "perplexity", "backpropagation", "array in c"
-        };
-        for (const auto& topic : collisionTopics) {
-            if (respLower.find(topic) != std::string::npos) {
-                return true; // Suffix collision hallucination detected!
-            }
-        }
-    }
-
-    return false;
+    // A continuation without any meaningful prompt-word overlap is not a reliable answer.
+    // This heuristic is conservative, not a substitute for semantic evaluation.
+    return !hasOverlap;
 }
 
 int runLLMChatExample() {
@@ -2089,26 +2078,14 @@ int runLLMChatExample() {
             }
         }
 
+        // Do not silently fall back to randomly initialized Transformer weights.
+        // The n-gram model is only a local continuation baseline, not semantic QA.
+        // If it cannot produce a usable continuation, abstain rather than inventing unrelated text.
+
+
         if (newTokenIds.size() < 3) {
-            std::vector<int> modelPromptIds = clampTokenIdsToModelVocab(promptIds, config.vocab_size);
-            if (modelPromptIds.size() > config.max_seq_length) {
-                modelPromptIds.erase(
-                    modelPromptIds.begin(),
-                    modelPromptIds.end() - static_cast<std::ptrdiff_t>(config.max_seq_length));
-            }
-
-            try {
-                const std::size_t maxNewTokens = 32;
-                std::vector<int> generated = model.generate(modelPromptIds, maxNewTokens);
-                if (generated.size() > modelPromptIds.size()) {
-                    newTokenIds.assign(generated.begin() + static_cast<std::ptrdiff_t>(modelPromptIds.size()),
-                                       generated.end());
-                }
-            } catch (const std::exception& ex) {
-                std::cerr << "Model error: " << ex.what() << "\n" << std::endl;
-            }
+            newTokenIds.clear();
         }
-
         std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
         if (response.empty()) {
             std::cout << "Model> I am ready to help. Could you please specify your question about coding, algorithms, or computer architecture?" << std::endl;
