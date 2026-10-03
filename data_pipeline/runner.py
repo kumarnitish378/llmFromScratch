@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Explicit dispatcher. pipeline = crawl + process; it does not train the C++ Transformer."""
-import argparse, importlib.util, sqlite3, subprocess, sys
+import argparse, importlib.util, sqlite3, subprocess, sys, shutil
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 def run(args):
@@ -8,7 +8,7 @@ def run(args):
     return subprocess.run(args,cwd=ROOT).returncode
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("--mode",choices=["smoke-test","crawl","process","pipeline","status"],required=True)
+    p.add_argument("--mode",choices=["smoke-test","crawl","process","train","pipeline","status"],required=True)
     p.add_argument("--max-hours",type=float); p.add_argument("--max-pages",type=int)
     p.add_argument("--max-disk-gb",type=float); p.add_argument("--max-ram-gb",type=float)
     p.add_argument("--seed-file"); p.add_argument("--resume",action="store_true"); p.add_argument("--dry-run",action="store_true")
