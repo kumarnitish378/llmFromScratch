@@ -1969,20 +1969,9 @@ static bool isSemanticCollision(const std::string& prompt, const std::string& re
         }
     }
 
-    if (!hasOverlap) {
-        static const std::vector<std::string> collisionTopics = {
-            "binary tree", "linked list", "bjarne stroustrup", "transformer",
-            "byte pair encoding", "sentencepiece", "self-attention", "huffman",
-            "lz77", "cross-entropy", "perplexity", "backpropagation", "array in c"
-        };
-        for (const auto& topic : collisionTopics) {
-            if (respLower.find(topic) != std::string::npos) {
-                return true; // Suffix collision hallucination detected!
-            }
-        }
-    }
-
-    return false;
+    // A continuation without any meaningful prompt-word overlap is not a reliable answer.
+    // This heuristic is conservative, not a substitute for semantic evaluation.
+    return !hasOverlap;
 }
 
 int runLLMChatExample() {
@@ -2094,6 +2083,9 @@ int runLLMChatExample() {
         // If it cannot produce a usable continuation, abstain rather than inventing unrelated text.
 
 
+        if (newTokenIds.size() < 3) {
+            newTokenIds.clear();
+        }
         std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
         if (response.empty()) {
             std::cout << "Model> I am ready to help. Could you please specify your question about coding, algorithms, or computer architecture?" << std::endl;
