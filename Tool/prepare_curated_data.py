@@ -32,6 +32,7 @@ URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 GARBAGE_CHARS_RE = re.compile(r"[â€œâ€\x00-\x08\x0b\x0c\x0e-\x1f]")
 WHITESPACE_RE = re.compile(r"[ \t]+")
 CODE_LINE_RE = re.compile(r"^\s*(#include|import |from |def |class |public |private |protected |return |var |let |const |function |for\s*\(|while\s*\(|if\s*\(|template<|std::|\{|\}|;|\/\/|\/\*|\*\/)", re.IGNORECASE)
+INDIC_SCRIPTS_RE = re.compile(r"[\u0900-\u097F\uA8E0-\uA8FF\u1CD0-\u1CFF\u0980-\u0D7F]")
 
 BASE_QA_DATA: List[Tuple[str, str]] = [
     # Identity & Greetings (every query has a unique 3-token suffix)
@@ -133,11 +134,12 @@ BASE_QA_DATA: List[Tuple[str, str]] = [
 ]
 
 def clean_line(line: str) -> str:
-    """Clean a text line by removing citations, urls, and normalizing whitespace."""
+    """Clean a text line by removing citations, urls, Indic characters, and normalizing whitespace."""
     line = BRACKET_NUM_RE.sub(" ", line)
     line = BIBLIO_RE.sub(" ", line)
     line = URL_RE.sub(" ", line)
     line = GARBAGE_CHARS_RE.sub(" ", line)
+    line = INDIC_SCRIPTS_RE.sub(" ", line)
     line = WHITESPACE_RE.sub(" ", line).strip()
     return line
 
@@ -148,6 +150,8 @@ def is_clean_prose(line: str) -> bool:
     if CODE_LINE_RE.match(line):
         return False
     if BIBLIO_RE.search(line):
+        return False
+    if INDIC_SCRIPTS_RE.search(line):
         return False
     alpha = sum(1 for c in line if c.isalpha())
     if alpha < len(line) * 0.70:
