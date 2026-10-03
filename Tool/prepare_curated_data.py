@@ -97,6 +97,20 @@ BASE_QA_DATA: List[Tuple[str, str]] = [
     ("what is a pointer", "A pointer is a variable that stores the memory address of another variable or object in memory."),
     ("what is shared memory in cuda", "Shared memory is a fast on-chip programmable cache shared among all threads in a CUDA thread block that enables high-throughput data reuse."),
     ("what is a cuda warp", "A CUDA warp is a basic execution unit consisting of 32 threads that execute instructions simultaneously in SIMT fashion on NVIDIA GPUs."),
+
+    # Data Structures & C Programming
+    ("explain link list in c programming", "A linked list in C is a linear dynamic data structure where elements called nodes are connected via pointers rather than stored contiguously. Each node has a data field and a next pointer defined as struct Node { int data; struct Node* next; }. Nodes are dynamically allocated on the heap using malloc and traversed sequentially starting from the head pointer."),
+    ("can you explain link list in c programming", "In C programming, a linked list is a dynamic sequence of nodes connected by pointers. Each node contains data and a pointer to the next node in the list. Dynamic memory allocation with malloc allows linked lists to grow or shrink without pre-allocating a fixed contiguous array. Inserting or deleting at the head requires O(1) constant time, while finding an element takes O(n) linear search time."),
+    ("what is a linked list", "A linked list is a linear collection of data elements whose order is not given by their physical placement in memory, but rather each element points to the next using a pointer reference."),
+    ("how do you implement a linked list in c", "To implement a linked list in C, define a node struct with data and a pointer to struct Node, allocate nodes dynamically using malloc, set the next pointer of the last node to NULL, and free allocated memory after use."),
+    ("what is a singly linked list", "A singly linked list is a unidirectionally linked data structure where each node points only to the subsequent node, terminating with a NULL pointer at the end of the list."),
+    ("what is a doubly linked list", "A doubly linked list is a bidirectional data structure where each node stores two pointers: one pointing forward to the next node and one pointing backward to the previous node."),
+    ("what is the difference between an array and a linked list", "Arrays store elements in contiguous memory allowing O(1) random index access but have fixed capacity, whereas linked lists allocate nodes anywhere in heap memory and connect them with pointers, allowing flexible resizing and O(1) head insertion but requiring O(n) sequential access."),
+    ("how does malloc work in c", "The malloc function in C allocates a requested number of contiguous bytes on the heap at runtime and returns a void pointer to the beginning of the memory block, which must be cast and later released with free."),
+    ("what is a stack data structure", "A stack is a linear data structure following the Last In First Out LIFO principle, where elements are added and removed exclusively from one end called the top."),
+    ("what is a queue data structure", "A queue is a linear data structure following the First In First Out FIFO principle, where elements are inserted at the rear and removed from the front."),
+    ("what is a binary search tree", "A binary search tree is a node-based binary tree data structure where each node has a key, and values in the left subtree are smaller than the node key, while values in the right subtree are greater."),
+    ("what is dynamic memory allocation in c", "Dynamic memory allocation in C enables programs to obtain heap memory at runtime using functions like malloc, calloc, realloc, and release it using free."),
 ]
 
 def clean_line(line: str) -> str:

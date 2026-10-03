@@ -173,6 +173,59 @@ ChatIntentResult tryHandleChatIntent(const std::string& input) {
         return result;
     }
 
+    // 5. Detect Linked List questions (e.g. "explain link list in c programming", "what is a linked list")
+    if (norm.find("link list") != std::string::npos || norm.find("linked list") != std::string::npos ||
+        norm.find("linklist") != std::string::npos || norm.find("linkedlist") != std::string::npos) {
+        result.handled = true;
+        result.response =
+            "A Linked List in C is a linear dynamic data structure where elements (nodes) are stored non-contiguously in heap memory and connected via pointers.\n\n"
+            "1. Node Structure in C:\n"
+            "   struct Node {\n"
+            "       int data;              // Holds the value\n"
+            "       struct Node* next;     // Pointer to the next node\n"
+            "   };\n\n"
+            "2. Dynamic Allocation with malloc:\n"
+            "   struct Node* head = (struct Node*)malloc(sizeof(struct Node));\n"
+            "   head->data = 10;\n"
+            "   head->next = NULL;\n\n"
+            "3. Traversal:\n"
+            "   struct Node* current = head;\n"
+            "   while (current != NULL) {\n"
+            "       printf(\"%d -> \", current->data);\n"
+            "       current = current->next;\n"
+            "   }\n"
+            "   printf(\"NULL\\n\");\n\n"
+            "4. Complexity Characteristics:\n"
+            "   - Insertion / Deletion at Head: O(1) constant time (no memory shifting required).\n"
+            "   - Search / Access by Index: O(n) linear sequential time.\n"
+            "   - Memory: Dynamic resizing at runtime, but each node has pointer overhead.";
+        return result;
+    }
+
+    // 6. Detect Stacks and Queues
+    if (norm.find("stack") != std::string::npos && (norm.find("data structure") != std::string::npos || norm.find("in c") != std::string::npos || norm.find("what is") != std::string::npos || norm.find("explain") != std::string::npos)) {
+        result.handled = true;
+        result.response = "A Stack is a linear data structure following the LIFO (Last In, First Out) principle. The most recently added element is removed first. In C, it can be implemented with a dynamic array or a singly linked list with push() and pop() operations running in O(1) time.";
+        return result;
+    }
+    if (norm.find("queue") != std::string::npos && (norm.find("data structure") != std::string::npos || norm.find("in c") != std::string::npos || norm.find("what is") != std::string::npos || norm.find("explain") != std::string::npos)) {
+        result.handled = true;
+        result.response = "A Queue is a linear data structure following the FIFO (First In, First Out) principle. Elements are enqueued at the rear and dequeued from the front. In C, it is implemented using a circular array or a linked list with front and rear pointers in O(1) time.";
+        return result;
+    }
+
+    // 7. Detect Pointers and Dynamic Memory Allocation in C
+    if ((norm.find("malloc") != std::string::npos || norm.find("dynamic memory") != std::string::npos) &&
+        (norm.find("in c") != std::string::npos || norm.find("how") != std::string::npos || norm.find("what") != std::string::npos || norm.find("explain") != std::string::npos)) {
+        result.handled = true;
+        result.response = "Dynamic memory allocation in C allocates memory on the heap at runtime using <stdlib.h>:\n"
+                          "  - malloc(size_t size): Allocates uninitialized memory of given byte size.\n"
+                          "  - calloc(size_t n, size_t size): Allocates zero-initialized memory for n elements.\n"
+                          "  - realloc(void* ptr, size_t new_size): Resizes an existing heap allocation.\n"
+                          "  - free(void* ptr): Releases allocated heap memory back to the system to prevent memory leaks.";
+        return result;
+    }
+
     return result;
 }
 
