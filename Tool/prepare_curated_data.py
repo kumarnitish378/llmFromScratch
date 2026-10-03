@@ -124,6 +124,12 @@ BASE_QA_DATA: List[Tuple[str, str]] = [
     ("what is a binary tree", "A binary tree is a tree data structure in which each parent node has no more than two child nodes, termed left and right. It forms the foundation for binary search trees, heaps, and expression trees."),
     ("how link list works in c programming", "A linked list in C works by chaining independent heap-allocated structures called nodes using pointers. Each node holds a value and a pointer to the next node. Because nodes are linked rather than contiguous, inserting or removing elements at the head takes O(1) time without shifting other elements."),
     ("how pointers work in c", "A pointer in C stores the memory address of another variable. You use the address-of operator & to retrieve a variable address and the dereference operator * to access or modify the underlying value."),
+
+    # Computer Hardware & Systems
+    ("how laptop works", "A laptop is a portable personal computer that integrates a central processing unit (CPU), RAM, solid-state drive (SSD), graphics processor (GPU), display, keyboard, and rechargeable battery into a single chassis. The CPU executes software instructions fetched from high-speed RAM, while the operating system coordinates input/output devices and power management."),
+    ("how does a laptop work", "A laptop operates through integrated hardware subsystems: the CPU processes calculations, RAM provides fast working memory for active applications, the SSD provides permanent storage for the operating system and files, and the motherboard connects all components via high-speed buses powered by a lithium-ion battery."),
+    ("what is a laptop", "A laptop is a battery-powered portable personal computer featuring an integrated display screen, keyboard, trackpad, and internal compute hardware inside a compact folding clamshell form factor."),
+    ("how computer works", "A computer works by accepting input data through peripheral devices, processing instructions using its CPU through fetch-decode-execute cycles, storing active runtime data in RAM, and outputting processed results to display screens or persistent storage."),
 ]
 
 def clean_line(line: str) -> str:

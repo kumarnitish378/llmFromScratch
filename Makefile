@@ -70,7 +70,7 @@ SIGNTOOL ?= "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/signtoo
 $(TARGET): $(OBJECTS) $(CUDA_OBJECTS)
 	$(LINK) $(THREAD_FLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 ifeq ($(OS),Windows_NT)
-	-@if exist $(SIGNTOOL) $(SIGNTOOL) sign /fd SHA256 /sha1 A5BFA90A2C87B030680EE92C719B7FCD84A1F73E /s My $@ >nul 2>&1
+	-@if exist $(SIGNTOOL) $(SIGNTOOL) sign /fd SHA256 /sha1 39A0435CCCEBB3D20351F992D2AFED520BE7D87E /s My $@ >nul 2>&1
 endif
 
 $(BUILD_DIR)/%.o: %.cpp

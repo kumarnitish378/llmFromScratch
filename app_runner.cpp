@@ -308,6 +308,26 @@ ChatIntentResult tryHandleChatIntent(const std::string& input) {
         return result;
     }
 
+    // 12. Detect Laptops, PCs, and Computer Hardware
+    if (norm.find("laptop") != std::string::npos || norm.find("computer") != std::string::npos || norm.find("notebook") != std::string::npos) {
+        result.handled = true;
+        result.response =
+            "A Laptop is a portable personal computer that integrates all essential computing hardware into a single clamshell chassis:\n\n"
+            "1. Core Hardware Components:\n"
+            "   - CPU (Central Processing Unit): The primary processor executing instructions via fetch-decode-execute cycles.\n"
+            "   - RAM (Random Access Memory): High-speed volatile memory holding active application code and runtime data.\n"
+            "   - SSD (Solid State Drive): Non-volatile flash storage holding the Operating System, file systems, and user data.\n"
+            "   - GPU (Graphics Processing Unit): Dedicated or integrated chip rendering 2D/3D frames and accelerating parallel workloads (e.g. CUDA).\n"
+            "   - Motherboard & Chipset: The main PCB routing power and high-speed PCIe/memory buses between components.\n"
+            "   - Battery & Power Management: High-density lithium-ion cell regulated by power management ICs (PMIC).\n"
+            "   - Display & Input Devices: Integrated LCD/OLED screen, membrane keyboard, trackpad, and thermal cooling heat pipes.\n\n"
+            "2. How It Operates:\n"
+            "   - Bootup: Power triggers UEFI firmware in ROM to initialize hardware and load the OS kernel from SSD to RAM.\n"
+            "   - Execution: The OS schedules user tasks, while the CPU and RAM continuously execute binary machine instructions.\n"
+            "   - Output: The GPU updates the frame buffer and sends video signals to refresh the laptop display.";
+        return result;
+    }
+
     return result;
 }
 
@@ -1900,6 +1920,71 @@ int runRealCorpusTrainingExample() {
     return 0;
 }
 
+static bool isSemanticCollision(const std::string& prompt, const std::string& response) {
+    if (response.empty() || prompt.empty()) {
+        return false;
+    }
+
+    static const std::unordered_set<std::string> stopWords = {
+        "how", "what", "why", "who", "when", "where", "which", "whose",
+        "can", "could", "would", "should", "will", "shall", "might", "may",
+        "you", "your", "yours", "tell", "explain", "describe", "about",
+        "does", "did", "done", "doing", "works", "work", "worked", "working",
+        "the", "this", "that", "these", "those", "for", "from", "with",
+        "and", "but", "not", "any", "some", "all", "are", "were", "been",
+        "in", "on", "at", "to", "of", "a", "an", "is", "it"
+    };
+
+    std::vector<std::string> promptWords;
+    std::string current;
+    for (char c : prompt) {
+        if (std::isalpha(static_cast<unsigned char>(c))) {
+            current.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        } else {
+            if (current.size() >= 3 && !stopWords.count(current)) {
+                promptWords.push_back(current);
+            }
+            current.clear();
+        }
+    }
+    if (current.size() >= 3 && !stopWords.count(current)) {
+        promptWords.push_back(current);
+    }
+
+    if (promptWords.empty()) {
+        return false;
+    }
+
+    std::string respLower;
+    respLower.reserve(response.size());
+    for (char c : response) {
+        respLower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+
+    bool hasOverlap = false;
+    for (const auto& w : promptWords) {
+        if (respLower.find(w) != std::string::npos) {
+            hasOverlap = true;
+            break;
+        }
+    }
+
+    if (!hasOverlap) {
+        static const std::vector<std::string> collisionTopics = {
+            "binary tree", "linked list", "bjarne stroustrup", "transformer",
+            "byte pair encoding", "sentencepiece", "self-attention", "huffman",
+            "lz77", "cross-entropy", "perplexity", "backpropagation", "array in c"
+        };
+        for (const auto& topic : collisionTopics) {
+            if (respLower.find(topic) != std::string::npos) {
+                return true; // Suffix collision hallucination detected!
+            }
+        }
+    }
+
+    return false;
+}
+
 int runLLMChatExample() {
     using namespace nks_llm;
 
@@ -2026,7 +2111,9 @@ int runLLMChatExample() {
 
         std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
         if (response.empty()) {
-            std::cout << "Model> I am ready to help. Could you please specify your question about coding, CUDA, or machine learning?" << std::endl;
+            std::cout << "Model> I am ready to help. Could you please specify your question about coding, algorithms, or computer architecture?" << std::endl;
+        } else if (isSemanticCollision(line, response)) {
+            std::cout << "Model> I do not currently have information about that topic in my training data. My training corpus focuses on computer science, algorithms (arrays, linked lists, binary trees, stacks, queues), hardware (laptops, PCs, CPUs, GPUs, RAM), C++, CUDA, and language models." << std::endl;
         } else {
             std::cout << "Model> " << response << std::endl;
         }
