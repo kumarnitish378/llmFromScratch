@@ -214,7 +214,7 @@ ChatIntentResult tryHandleChatIntent(const std::string& input) {
         return result;
     }
 
-    // 7. Detect Pointers and Dynamic Memory Allocation in C
+    // 7. Detect Dynamic Memory Allocation in C
     if ((norm.find("malloc") != std::string::npos || norm.find("dynamic memory") != std::string::npos) &&
         (norm.find("in c") != std::string::npos || norm.find("how") != std::string::npos || norm.find("what") != std::string::npos || norm.find("explain") != std::string::npos)) {
         result.handled = true;
@@ -223,6 +223,88 @@ ChatIntentResult tryHandleChatIntent(const std::string& input) {
                           "  - calloc(size_t n, size_t size): Allocates zero-initialized memory for n elements.\n"
                           "  - realloc(void* ptr, size_t new_size): Resizes an existing heap allocation.\n"
                           "  - free(void* ptr): Releases allocated heap memory back to the system to prevent memory leaks.";
+        return result;
+    }
+
+    // 8. Detect Array vs Linked List Comparison
+    if (norm.find("array") != std::string::npos && (norm.find("link") != std::string::npos || norm.find("vs") != std::string::npos || norm.find("difference") != std::string::npos)) {
+        result.handled = true;
+        result.response =
+            "Comparison between Arrays and Linked Lists in C:\n\n"
+            "1. Memory Allocation:\n"
+            "   - Array: Contiguous memory block, fixed size at declaration (or realloc).\n"
+            "   - Linked List: Non-contiguous nodes scattered in heap, grows dynamically node-by-node.\n\n"
+            "2. Access Time:\n"
+            "   - Array: O(1) instant random access via index arithmetic (arr[i]).\n"
+            "   - Linked List: O(n) sequential traversal starting from head pointer.\n\n"
+            "3. Insertion / Deletion:\n"
+            "   - Array: O(n) because remaining elements must be shifted in memory.\n"
+            "   - Linked List: O(1) at head by simply adjusting pointer links.\n\n"
+            "4. Cache Performance:\n"
+            "   - Array: Superior CPU cache locality due to contiguous memory.\n"
+            "   - Linked List: Poor cache locality due to pointer chasing across heap memory.";
+        return result;
+    }
+
+    // 9. Detect Arrays in C / Programming (e.g. "how array works in c programming", "what is an array")
+    if (norm.find("array") != std::string::npos) {
+        result.handled = true;
+        result.response =
+            "In C programming, an Array is a collection of elements of the same data type stored in contiguous (adjacent) memory locations.\n\n"
+            "1. Declaration and Initialization:\n"
+            "   int numbers[5] = {10, 20, 30, 40, 50};\n"
+            "   // Allocates 5 * sizeof(int) = 20 continuous bytes in memory.\n\n"
+            "2. How Element Access Works (Pointer Arithmetic):\n"
+            "   Array elements are accessed using zero-based indexing:\n"
+            "     Address of numbers[i] = Base_Address + (i * sizeof(type))\n"
+            "   Because the memory offset is computed with a single multiplication and addition, element lookup runs in O(1) constant time.\n\n"
+            "3. Key Characteristics:\n"
+            "   - Fixed Size: Size is fixed at compile-time (or dynamically allocated on the heap via malloc).\n"
+            "   - Contiguous Memory: Offers excellent CPU cache locality (spatial locality), making linear scans extremely fast.\n"
+            "   - Insertion/Deletion: Requires O(n) time because remaining elements must be shifted in memory.\n"
+            "   - Decay to Pointers: In C expressions, the array name decays into a pointer to its first element (&numbers[0]).";
+        return result;
+    }
+
+    // 10. Detect Binary Trees and Binary Search Trees (e.g. "how binary tree works", "what is a binary tree")
+    if (norm.find("tree") != std::string::npos || norm.find("bst") != std::string::npos) {
+        result.handled = true;
+        result.response =
+            "A Binary Tree is a hierarchical data structure where each node has at most two children, referred to as the left child and right child.\n\n"
+            "1. Node Structure in C:\n"
+            "   struct TreeNode {\n"
+            "       int val;\n"
+            "       struct TreeNode* left;   // Pointer to left child\n"
+            "       struct TreeNode* right;  // Pointer to right child\n"
+            "   };\n\n"
+            "2. How It Works:\n"
+            "   - Root Node: The topmost node of the tree with no parent.\n"
+            "   - Leaf Node: A node with no children (left == NULL and right == NULL).\n"
+            "   - Binary Search Tree (BST) Property: For every node, all values in its left subtree are smaller, and all values in its right subtree are greater.\n\n"
+            "3. Traversals:\n"
+            "   - Inorder (Left, Root, Right): Visits nodes in ascending sorted order in a BST.\n"
+            "   - Preorder (Root, Left, Right): Useful for copying or serializing trees.\n"
+            "   - Postorder (Left, Right, Root): Useful for deleting trees or evaluating expression trees.\n\n"
+            "4. Time Complexity:\n"
+            "   - Balanced BST: O(log n) for search, insert, and delete.\n"
+            "   - Degenerate (skewed) Tree: O(n) worst-case (behaves like a linked list).";
+        return result;
+    }
+
+    // 11. Detect Pointers in C
+    if (norm.find("pointer") != std::string::npos) {
+        result.handled = true;
+        result.response =
+            "A Pointer in C is a variable that stores the memory address of another variable.\n\n"
+            "1. Syntax and Operators:\n"
+            "   int x = 42;\n"
+            "   int* ptr = &x;  // '&' is address-of operator; stores address of x in ptr\n"
+            "   printf(\"%d\", *ptr); // '*' is dereference operator; accesses value at address (prints 42)\n\n"
+            "2. Why Pointers are Essential in C:\n"
+            "   - Dynamic Memory: Used to manage heap memory allocated via malloc() and free().\n"
+            "   - Pass by Reference: Enables functions to modify variables in caller scopes.\n"
+            "   - Data Structures: Forms the backbone of linked lists, trees, graphs, and hash tables.\n"
+            "   - Arrays and Strings: In C, strings are null-terminated char pointers (char*), and arrays decay to pointers.";
         return result;
     }
 
@@ -514,8 +596,9 @@ struct ChatNgramModel {
         for (std::size_t i = 0; i < maxNewTokens; ++i) {
             int nextToken = -1;
 
+            const std::size_t minContextL = (i == 0) ? 2 : 1;
             const std::size_t maxL = std::min<std::size_t>(window.size(), kMaxContextLen);
-            for (std::size_t L = maxL; L >= 1; --L) {
+            for (std::size_t L = maxL; L >= minContextL; --L) {
                 ContextKey key;
                 key.len = static_cast<std::uint8_t>(L);
                 const std::size_t start = window.size() - L;

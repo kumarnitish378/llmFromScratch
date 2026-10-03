@@ -111,6 +111,19 @@ BASE_QA_DATA: List[Tuple[str, str]] = [
     ("what is a queue data structure", "A queue is a linear data structure following the First In First Out FIFO principle, where elements are inserted at the rear and removed from the front."),
     ("what is a binary search tree", "A binary search tree is a node-based binary tree data structure where each node has a key, and values in the left subtree are smaller than the node key, while values in the right subtree are greater."),
     ("what is dynamic memory allocation in c", "Dynamic memory allocation in C enables programs to obtain heap memory at runtime using functions like malloc, calloc, realloc, and release it using free."),
+
+    # Arrays, Trees, Pointers & Algorithms
+    ("how array works in c programming", "In C programming, an array is a collection of elements of the same data type stored in contiguous memory locations. When declared as int arr[5], the compiler reserves contiguous bytes. Elements are accessed using zero-based indexing arr[i], computed directly in O(1) constant time with pointer arithmetic: address = base_address + i * sizeof(type). Arrays offer fast CPU cache locality and instant random access, but have a fixed size determined at declaration."),
+    ("how arrays work in c", "Arrays in C store homogeneous elements in contiguous blocks of memory. The array variable acts as a constant pointer to its first element arr[0]. Accessing any element via arr[index] takes O(1) time through address calculation. Because memory is contiguous, arrays provide superior CPU cache performance compared to linked structures."),
+    ("how array works", "An array stores a sequential, fixed-size collection of elements of the same type in contiguous memory. Each element is directly accessible via a numerical index in O(1) time through pointer offset arithmetic."),
+    ("what is an array in c", "An array in C is a contiguous block of memory allocated to hold a fixed number of items of identical data type, accessed using zero-based integer indices."),
+    ("what is an array in c programming", "An array in C programming is a linear data structure that stores homogeneous data elements in contiguous memory locations, enabling constant-time O(1) random access."),
+    ("explain array in c programming", "An array in C is defined with a type, name, and size, reserving continuous memory on the stack or heap. Because elements are adjacent, array operations benefit from spatial cache locality, though the array cannot be dynamically resized once declared."),
+    ("how binary tree works", "A binary tree is a hierarchical data structure composed of nodes, where each node has at most two children called the left child and right child. The topmost node is the root. In C, each node is defined as struct TreeNode { int val; struct TreeNode* left; struct TreeNode* right; }. Operations like traversal are implemented with recursion via inorder, preorder, or postorder walks, and search in a balanced binary search tree runs in O(log n) time."),
+    ("how does a binary tree work", "A binary tree organizes items hierarchically with a root node branching to at most two child nodes per parent. In a binary search tree, items smaller than the parent go left, and larger items go right, enabling O(log n) average search and insertion time."),
+    ("what is a binary tree", "A binary tree is a tree data structure in which each parent node has no more than two child nodes, termed left and right. It forms the foundation for binary search trees, heaps, and expression trees."),
+    ("how link list works in c programming", "A linked list in C works by chaining independent heap-allocated structures called nodes using pointers. Each node holds a value and a pointer to the next node. Because nodes are linked rather than contiguous, inserting or removing elements at the head takes O(1) time without shifting other elements."),
+    ("how pointers work in c", "A pointer in C stores the memory address of another variable. You use the address-of operator & to retrieve a variable address and the dereference operator * to access or modify the underlying value."),
 ]
 
 def clean_line(line: str) -> str:
@@ -153,6 +166,8 @@ def generate_conversations() -> List[str]:
         lines.append(f"Please {query}. {response}")
         lines.append(f"Can you {query}? {response}")
         lines.append(f"Could you {query}? {response}")
+        lines.append(f"Tell me {query}. {response}")
+        lines.append(f"Explain {query}. {response}")
     return lines
 
 def process_essays(essay_path: Path, max_lines: int = 50000) -> List[str]:
@@ -207,8 +222,20 @@ def main():
     essay_file = DATA_DIR / "Training_Essay_Data.txt"
     essay_lines = process_essays(essay_file, max_lines=15000)
 
-    # 3. Assemble balanced corpus
-    print("\n[3] Assembling balanced training corpus...")
+    # 3. Ingest Crawled Web Data from Crawl4AI
+    print("\n[3] Ingesting Crawl4AI web crawled data...")
+    crawled_lines: List[str] = []
+    for crawl_file in DATA_DIR.glob("crawled_*.txt"):
+        print(f"  [+] Loading crawled web data from {crawl_file.name}...")
+        with open(crawl_file, "r", encoding="utf-8", errors="ignore") as cf:
+            for cl in cf:
+                cl = clean_line(cl)
+                if len(cl) > 30:
+                    crawled_lines.append(cl)
+    print(f"  [+] Ingested {len(crawled_lines)} crawled tutorial/documentation lines.")
+
+    # 4. Assemble balanced corpus
+    print("\n[4] Assembling balanced training corpus...")
     final_lines: List[str] = []
 
     # Oversample QA pairs (x25) for high-signal prompt transitions while maintaining natural prose
@@ -216,7 +243,8 @@ def main():
     for _ in range(25):
         final_lines.extend(qa_lines)
 
-    # Add essay lines for general vocabulary richness and syntax
+    # Add crawled data and essay lines for general vocabulary richness and syntax
+    final_lines.extend(crawled_lines)
     final_lines.extend(essay_lines)
 
     print(f"  [+] Total training lines: {len(final_lines)}")
