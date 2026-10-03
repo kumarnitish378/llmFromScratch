@@ -1,0 +1,14 @@
+seeds:
+  - "https://example.com/"
+allowed_domains:
+  - "example.com"
+max_depth: 3
+max_pages: 1000
+max_hours: 8
+max_disk_gb: 20
+max_ram_gb: 6
+concurrency: 2
+request_delay_seconds: 1.5
+user_agent: "llmFromScratchResearchBot/1.0"
+default_license_status: "unknown"
+output_dir: "Data/crawl"
