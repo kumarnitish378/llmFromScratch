@@ -1,14 +1,17 @@
+# Crawl only these hosts and their subdomains. Respect each site's robots.txt and terms.
 seeds:
-  - "https://example.com/"
+  - "https://en.wikipedia.org/wiki/Main_Page"
+  - "https://www.geeksforgeeks.org/"
 allowed_domains:
-  - "example.com"
+  - "wikipedia.org"
+  - "geeksforgeeks.org"
 max_depth: 3
 max_pages: 1000
 max_hours: 8
 max_disk_gb: 20
 max_ram_gb: 6
-concurrency: 2
-request_delay_seconds: 1.5
-user_agent: "llmFromScratchResearchBot/1.0"
+concurrency: 1
+request_delay_seconds: 2.0
+user_agent: "llmFromScratchResearchBot/1.0 (educational research crawler)"
 default_license_status: "unknown"
 output_dir: "Data/crawl"
