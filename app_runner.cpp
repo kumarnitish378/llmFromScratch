@@ -13,6 +13,7 @@
 #include <random>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef _WIN32
@@ -41,9 +42,39 @@ std::string getEnvOrDefault(const char* name, const std::string& fallback) {
     return std::string(value);
 }
 
+std::string trimAscii(std::string value) {
+    while (!value.empty() && (value.back() == '\r' || value.back() == '\n' || std::isspace(static_cast<unsigned char>(value.back())))) {
+        value.pop_back();
+    }
+    std::size_t start = 0;
+    while (start < value.size() && (value[start] == '\r' || value[start] == '\n' || std::isspace(static_cast<unsigned char>(value[start])))) {
+        ++start;
+    }
+    if (start > 0) {
+        value.erase(0, start);
+    }
+    return value;
+}
+
+std::string formatModelResponse(std::string text) {
+    std::size_t start = 0;
+    while (start < text.size() && (std::isspace(static_cast<unsigned char>(text[start])) ||
+                                  text[start] == '?' || text[start] == '.' || text[start] == '!' ||
+                                  text[start] == ':' || text[start] == '-' || text[start] == ',')) {
+        ++start;
+    }
+    if (start > 0) {
+        text.erase(0, start);
+    }
+    if (!text.empty() && std::islower(static_cast<unsigned char>(text[0]))) {
+        text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
+    }
+    return text;
+}
+
 struct AppPaths {
-    std::string bpeTrainingPath = getEnvOrDefault("NKS_BPE_TRAINING_PATH", "Data/processed");
-    std::string sentencePieceTrainingPath = getEnvOrDefault("NKS_SP_TRAINING_PATH", "Data/processed");
+    std::string bpeTrainingPath = getEnvOrDefault("NKS_BPE_TRAINING_PATH", "Data/clean_training_corpus.txt");
+    std::string sentencePieceTrainingPath = getEnvOrDefault("NKS_SP_TRAINING_PATH", "Data/clean_training_corpus.txt");
     std::string bpeModelPath = getEnvOrDefault("NKS_BPE_MODEL_PATH", "Metadata/bpe_model_processed.bin");
     std::string mergedTxtCorpusPath = getEnvOrDefault("NKS_MERGED_TXT_CORPUS_PATH", "Metadata/processed_txt_corpus.txt");
     std::string chatModelPath = getEnvOrDefault("NKS_CHAT_MODEL_PATH", "Metadata/llm_chat_ngram.bin");
@@ -63,6 +94,26 @@ struct TokenPairKeyHash {
         const std::uint64_t a = static_cast<std::uint32_t>(key.first);
         const std::uint64_t b = static_cast<std::uint32_t>(key.second);
         return static_cast<std::size_t>((a << 32U) ^ b);
+    }
+};
+
+struct TokenTripleKey {
+    int first = -1;
+    int second = -1;
+    int third = -1;
+
+    bool operator==(const TokenTripleKey& other) const {
+        return first == other.first && second == other.second && third == other.third;
+    }
+};
+
+struct TokenTripleKeyHash {
+    std::size_t operator()(const TokenTripleKey& key) const {
+        std::size_t seed = 0;
+        seed ^= static_cast<std::size_t>(static_cast<std::uint32_t>(key.first)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= static_cast<std::size_t>(static_cast<std::uint32_t>(key.second)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= static_cast<std::size_t>(static_cast<std::uint32_t>(key.third)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        return seed;
     }
 };
 
@@ -86,7 +137,7 @@ enum class TokenizerMode {
 
 constexpr double kApproxCharsPerToken = 4.0;
 constexpr std::size_t kDefaultChatTrainingLineLimit = 50000;
-constexpr std::size_t kChatGenerationTokens = 48;
+constexpr std::size_t kChatGenerationTokens = 80;
 
 struct TokenizationResult {
     std::vector<std::string> pieces;
@@ -96,21 +147,66 @@ struct TokenizationResult {
     std::size_t vocabularySize = 0;
 };
 
+constexpr std::size_t kMaxContextLen = 7;
+
+struct ContextKey {
+    std::uint8_t len = 0;
+    int tokens[kMaxContextLen] = {0};
+
+    bool operator==(const ContextKey& other) const {
+        if (len != other.len) {
+            return false;
+        }
+        for (std::uint8_t i = 0; i < len; ++i) {
+            if (tokens[i] != other.tokens[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
+struct ContextKeyHash {
+    std::size_t operator()(const ContextKey& key) const {
+        std::size_t seed = 0;
+        for (std::uint8_t i = 0; i < key.len; ++i) {
+            seed ^= static_cast<std::size_t>(static_cast<std::uint32_t>(key.tokens[i])) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+};
+
 struct ChatNgramModel {
-    std::unordered_map<int, std::unordered_map<int, std::uint32_t>> transitions;
-    std::unordered_map<TokenPairKey, std::unordered_map<int, std::uint32_t>, TokenPairKeyHash> pairTransitions;
+    std::unordered_map<ContextKey, std::unordered_map<int, std::uint32_t>, ContextKeyHash> ngramTransitions;
     std::unordered_map<int, std::uint32_t> unigramCounts;
+    std::unordered_set<int> stopTokenIds;
     std::size_t vocabSize = 0;
     std::size_t observedPairs = 0;
     std::size_t observedTriples = 0;
+    std::size_t observedQuadruples = 0;
+    std::size_t contextCounts[kMaxContextLen + 1] = {0};
 
     void clear() {
-        transitions.clear();
-        pairTransitions.clear();
+        ngramTransitions.clear();
         unigramCounts.clear();
+        stopTokenIds.clear();
         vocabSize = 0;
         observedPairs = 0;
         observedTriples = 0;
+        observedQuadruples = 0;
+        for (std::size_t i = 0; i <= kMaxContextLen; ++i) {
+            contextCounts[i] = 0;
+        }
+    }
+
+    void setStopTokens(NKS_Tokenizer& tokenizer) {
+        stopTokenIds.clear();
+        for (const std::string& punct : {".", "?", "!", "\n"}) {
+            const auto ids = tokenizer.encode(punct);
+            for (int id : ids) {
+                stopTokenIds.insert(id);
+            }
+        }
     }
 
     void observe(const std::vector<int>& tokenIds, std::size_t tokenizerVocabSize) {
@@ -119,54 +215,114 @@ struct ChatNgramModel {
         }
 
         vocabSize = std::max(vocabSize, tokenizerVocabSize);
-        int previousPrevious = -1;
-        int previous = -1;
+        std::deque<int> window;
+
         for (int tokenId : tokenIds) {
-            if (tokenId < 0 || tokenId >= static_cast<int>(tokenizerVocabSize)) {
-                previous = -1;
+            if (tokenId < 0) {
+                window.clear();
                 continue;
             }
 
+            vocabSize = std::max(vocabSize, static_cast<std::size_t>(tokenId + 1));
             ++unigramCounts[tokenId];
-            if (previous >= 0) {
-                ++transitions[previous][tokenId];
+
+            const std::size_t maxL = std::min<std::size_t>(window.size(), kMaxContextLen);
+            for (std::size_t L = 1; L <= maxL; ++L) {
+                ContextKey key;
+                key.len = static_cast<std::uint8_t>(L);
+                const std::size_t start = window.size() - L;
+                for (std::size_t j = 0; j < L; ++j) {
+                    key.tokens[j] = window[start + j];
+                }
+                ++ngramTransitions[key][tokenId];
+                ++contextCounts[L];
+            }
+
+            if (window.size() >= 1) {
                 ++observedPairs;
             }
-            if (previousPrevious >= 0 && previous >= 0) {
-                ++pairTransitions[TokenPairKey{previousPrevious, previous}][tokenId];
+            if (window.size() >= 2) {
                 ++observedTriples;
             }
-            previousPrevious = previous;
-            previous = tokenId;
+            if (window.size() >= 3) {
+                ++observedQuadruples;
+            }
+
+            window.push_back(tokenId);
+            if (window.size() > kMaxContextLen) {
+                window.pop_front();
+            }
         }
     }
 
     bool empty() const {
-        return observedPairs == 0 || unigramCounts.empty();
+        return ngramTransitions.empty() || unigramCounts.empty();
     }
 
     int sampleFromCounts(
         const std::unordered_map<int, std::uint32_t>& counts,
         std::mt19937& gen,
-        const std::deque<int>& recent) const {
+        const std::deque<int>& recent,
+        float temperature = 0.25f,
+        std::size_t topK = 15) const {
         if (counts.empty()) {
-            return 0;
+            return -1;
+        }
+
+        if (temperature < 0.05f) {
+            int bestId = -1;
+            std::uint32_t bestCount = 0;
+            for (const auto& kv : counts) {
+                if (kv.second > bestCount) {
+                    bestCount = kv.second;
+                    bestId = kv.first;
+                }
+            }
+            return bestId;
+        }
+
+        struct ScoredCandidate {
+            int id;
+            double weight;
+        };
+        std::vector<ScoredCandidate> candidates;
+        candidates.reserve(counts.size());
+
+        const double invTemp = 1.0 / static_cast<double>(temperature);
+        for (const auto& kv : counts) {
+            double weight = std::pow(static_cast<double>(kv.second), invTemp);
+            std::size_t repeatCount = 0;
+            const std::size_t checkStart = (recent.size() > 3) ? (recent.size() - 3) : 0;
+            for (std::size_t r = checkStart; r < recent.size(); ++r) {
+                if (recent[r] == kv.first) {
+                    ++repeatCount;
+                }
+            }
+            if (repeatCount > 0) {
+                weight *= std::pow(0.5, repeatCount);
+            }
+            candidates.push_back({kv.first, std::max(weight, 0.0001)});
+        }
+
+        if (topK > 0 && candidates.size() > topK) {
+            std::partial_sort(
+                candidates.begin(),
+                candidates.begin() + topK,
+                candidates.end(),
+                [](const ScoredCandidate& a, const ScoredCandidate& b) {
+                    return a.weight > b.weight;
+                });
+            candidates.resize(topK);
         }
 
         std::vector<int> ids;
         std::vector<double> weights;
-        ids.reserve(counts.size());
-        weights.reserve(counts.size());
+        ids.reserve(candidates.size());
+        weights.reserve(candidates.size());
 
-        for (const auto& kv : counts) {
-            double weight = static_cast<double>(kv.second);
-            for (int recentToken : recent) {
-                if (recentToken == kv.first) {
-                    weight *= 0.35;
-                }
-            }
-            ids.push_back(kv.first);
-            weights.push_back(std::max(weight, 0.001));
+        for (const auto& cand : candidates) {
+            ids.push_back(cand.id);
+            weights.push_back(cand.weight);
         }
 
         std::discrete_distribution<std::size_t> dist(weights.begin(), weights.end());
@@ -183,44 +339,62 @@ struct ChatNgramModel {
         std::vector<int> generated;
         generated.reserve(maxNewTokens);
 
-        int previous = -1;
-        int current = -1;
-        for (auto it = promptIds.rbegin(); it != promptIds.rend(); ++it) {
-            if (*it >= 0 && *it < static_cast<int>(vocabSize)) {
-                if (current < 0) {
-                    current = *it;
-                } else {
-                    previous = *it;
-                    break;
+        std::deque<int> window;
+        for (int id : promptIds) {
+            if (id >= 0) {
+                window.push_back(id);
+                if (window.size() > kMaxContextLen) {
+                    window.pop_front();
                 }
             }
         }
 
         std::deque<int> recent;
-        if (current >= 0) {
-            recent.push_back(current);
+        for (int id : window) {
+            recent.push_back(id);
         }
 
         for (std::size_t i = 0; i < maxNewTokens; ++i) {
-            int nextToken = 0;
-            const auto pairIt = pairTransitions.find(TokenPairKey{previous, current});
-            if (pairIt != pairTransitions.end() && !pairIt->second.empty()) {
-                nextToken = sampleFromCounts(pairIt->second, gen, recent);
-            } else {
-                const auto transitionIt = transitions.find(current);
-                if (transitionIt != transitions.end() && !transitionIt->second.empty()) {
-                    nextToken = sampleFromCounts(transitionIt->second, gen, recent);
-                } else {
-                    nextToken = sampleFromCounts(unigramCounts, gen, recent);
+            int nextToken = -1;
+
+            const std::size_t maxL = std::min<std::size_t>(window.size(), kMaxContextLen);
+            for (std::size_t L = maxL; L >= 1; --L) {
+                ContextKey key;
+                key.len = static_cast<std::uint8_t>(L);
+                const std::size_t start = window.size() - L;
+                for (std::size_t j = 0; j < L; ++j) {
+                    key.tokens[j] = window[start + j];
+                }
+
+                auto it = ngramTransitions.find(key);
+                if (it != ngramTransitions.end() && !it->second.empty()) {
+                    const float temp = (L >= 4) ? 0.0f : 0.20f;
+                    nextToken = sampleFromCounts(it->second, gen, recent, temp);
+                    break;
                 }
             }
 
+            if (nextToken < 0) {
+                nextToken = sampleFromCounts(unigramCounts, gen, recent, 0.35f);
+            }
+
+            if (nextToken < 0) {
+                break;
+            }
+
             generated.push_back(nextToken);
-            previous = current;
-            current = nextToken;
+            window.push_back(nextToken);
+            if (window.size() > kMaxContextLen) {
+                window.pop_front();
+            }
+
             recent.push_back(nextToken);
             if (recent.size() > 24) {
                 recent.pop_front();
+            }
+
+            if (i >= 8 && stopTokenIds.count(nextToken)) {
+                break;
             }
         }
 
@@ -243,21 +417,27 @@ struct ChatNgramModel {
             return false;
         }
 
-        const char magic[8] = {'N', 'K', 'S', 'N', 'G', 'R', 'M', '2'};
+        const char magic[8] = {'N', 'K', 'S', 'N', 'G', 'R', 'M', '4'};
         out.write(magic, sizeof(magic));
 
         const std::uint64_t savedVocabSize = static_cast<std::uint64_t>(vocabSize);
         const std::uint64_t savedObservedPairs = static_cast<std::uint64_t>(observedPairs);
         const std::uint64_t savedObservedTriples = static_cast<std::uint64_t>(observedTriples);
+        const std::uint64_t savedObservedQuadruples = static_cast<std::uint64_t>(observedQuadruples);
         const std::uint64_t unigramSize = static_cast<std::uint64_t>(unigramCounts.size());
-        const std::uint64_t transitionSize = static_cast<std::uint64_t>(transitions.size());
-        const std::uint64_t pairTransitionSize = static_cast<std::uint64_t>(pairTransitions.size());
+        const std::uint64_t ngramCount = static_cast<std::uint64_t>(ngramTransitions.size());
+
         out.write(reinterpret_cast<const char*>(&savedVocabSize), sizeof(savedVocabSize));
         out.write(reinterpret_cast<const char*>(&savedObservedPairs), sizeof(savedObservedPairs));
         out.write(reinterpret_cast<const char*>(&savedObservedTriples), sizeof(savedObservedTriples));
+        out.write(reinterpret_cast<const char*>(&savedObservedQuadruples), sizeof(savedObservedQuadruples));
         out.write(reinterpret_cast<const char*>(&unigramSize), sizeof(unigramSize));
-        out.write(reinterpret_cast<const char*>(&transitionSize), sizeof(transitionSize));
-        out.write(reinterpret_cast<const char*>(&pairTransitionSize), sizeof(pairTransitionSize));
+        out.write(reinterpret_cast<const char*>(&ngramCount), sizeof(ngramCount));
+
+        for (std::size_t i = 0; i <= kMaxContextLen; ++i) {
+            const std::uint64_t c = static_cast<std::uint64_t>(contextCounts[i]);
+            out.write(reinterpret_cast<const char*>(&c), sizeof(c));
+        }
 
         for (const auto& kv : unigramCounts) {
             const std::int32_t id = static_cast<std::int32_t>(kv.first);
@@ -266,29 +446,18 @@ struct ChatNgramModel {
             out.write(reinterpret_cast<const char*>(&count), sizeof(count));
         }
 
-        for (const auto& row : transitions) {
-            const std::int32_t prev = static_cast<std::int32_t>(row.first);
-            const std::uint64_t rowSize = static_cast<std::uint64_t>(row.second.size());
-            out.write(reinterpret_cast<const char*>(&prev), sizeof(prev));
-            out.write(reinterpret_cast<const char*>(&rowSize), sizeof(rowSize));
-            for (const auto& kv : row.second) {
-                const std::int32_t next = static_cast<std::int32_t>(kv.first);
-                const std::uint32_t count = kv.second;
-                out.write(reinterpret_cast<const char*>(&next), sizeof(next));
-                out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        for (const auto& entry : ngramTransitions) {
+            const std::uint8_t len = entry.first.len;
+            out.write(reinterpret_cast<const char*>(&len), sizeof(len));
+            for (std::uint8_t j = 0; j < len; ++j) {
+                const std::int32_t tok = static_cast<std::int32_t>(entry.first.tokens[j]);
+                out.write(reinterpret_cast<const char*>(&tok), sizeof(tok));
             }
-        }
-
-        for (const auto& row : pairTransitions) {
-            const std::int32_t first = static_cast<std::int32_t>(row.first.first);
-            const std::int32_t second = static_cast<std::int32_t>(row.first.second);
-            const std::uint64_t rowSize = static_cast<std::uint64_t>(row.second.size());
-            out.write(reinterpret_cast<const char*>(&first), sizeof(first));
-            out.write(reinterpret_cast<const char*>(&second), sizeof(second));
+            const std::uint64_t rowSize = static_cast<std::uint64_t>(entry.second.size());
             out.write(reinterpret_cast<const char*>(&rowSize), sizeof(rowSize));
-            for (const auto& kv : row.second) {
-                const std::int32_t next = static_cast<std::int32_t>(kv.first);
-                const std::uint32_t count = kv.second;
+            for (const auto& target : entry.second) {
+                const std::int32_t next = static_cast<std::int32_t>(target.first);
+                const std::uint32_t count = target.second;
                 out.write(reinterpret_cast<const char*>(&next), sizeof(next));
                 out.write(reinterpret_cast<const char*>(&count), sizeof(count));
             }
@@ -306,69 +475,176 @@ struct ChatNgramModel {
 
         char magic[8] = {};
         in.read(magic, sizeof(magic));
-        const char expected[8] = {'N', 'K', 'S', 'N', 'G', 'R', 'M', '2'};
-        if (!std::equal(magic, magic + sizeof(magic), expected)) {
-            return false;
-        }
+        const char expected4[8] = {'N', 'K', 'S', 'N', 'G', 'R', 'M', '4'};
+        const char expected3[8] = {'N', 'K', 'S', 'N', 'G', 'R', 'M', '3'};
+        const char expected2[8] = {'N', 'K', 'S', 'N', 'G', 'R', 'M', '2'};
 
-        std::uint64_t savedVocabSize = 0;
-        std::uint64_t savedObservedPairs = 0;
-        std::uint64_t savedObservedTriples = 0;
-        std::uint64_t unigramSize = 0;
-        std::uint64_t transitionSize = 0;
-        std::uint64_t pairTransitionSize = 0;
-        in.read(reinterpret_cast<char*>(&savedVocabSize), sizeof(savedVocabSize));
-        in.read(reinterpret_cast<char*>(&savedObservedPairs), sizeof(savedObservedPairs));
-        in.read(reinterpret_cast<char*>(&savedObservedTriples), sizeof(savedObservedTriples));
-        in.read(reinterpret_cast<char*>(&unigramSize), sizeof(unigramSize));
-        in.read(reinterpret_cast<char*>(&transitionSize), sizeof(transitionSize));
-        in.read(reinterpret_cast<char*>(&pairTransitionSize), sizeof(pairTransitionSize));
+        const bool isV4 = std::equal(magic, magic + sizeof(magic), expected4);
+        const bool isV3 = std::equal(magic, magic + sizeof(magic), expected3);
+        const bool isV2 = std::equal(magic, magic + sizeof(magic), expected2);
 
-        vocabSize = static_cast<std::size_t>(savedVocabSize);
-        observedPairs = static_cast<std::size_t>(savedObservedPairs);
-        observedTriples = static_cast<std::size_t>(savedObservedTriples);
+        if (isV4) {
+            std::uint64_t savedVocabSize = 0;
+            std::uint64_t savedObservedPairs = 0;
+            std::uint64_t savedObservedTriples = 0;
+            std::uint64_t savedObservedQuadruples = 0;
+            std::uint64_t unigramSize = 0;
+            std::uint64_t ngramCount = 0;
 
-        for (std::uint64_t i = 0; i < unigramSize; ++i) {
-            std::int32_t id = 0;
-            std::uint32_t count = 0;
-            in.read(reinterpret_cast<char*>(&id), sizeof(id));
-            in.read(reinterpret_cast<char*>(&count), sizeof(count));
-            unigramCounts[static_cast<int>(id)] = count;
-        }
+            in.read(reinterpret_cast<char*>(&savedVocabSize), sizeof(savedVocabSize));
+            in.read(reinterpret_cast<char*>(&savedObservedPairs), sizeof(savedObservedPairs));
+            in.read(reinterpret_cast<char*>(&savedObservedTriples), sizeof(savedObservedTriples));
+            in.read(reinterpret_cast<char*>(&savedObservedQuadruples), sizeof(savedObservedQuadruples));
+            in.read(reinterpret_cast<char*>(&unigramSize), sizeof(unigramSize));
+            in.read(reinterpret_cast<char*>(&ngramCount), sizeof(ngramCount));
 
-        for (std::uint64_t i = 0; i < transitionSize; ++i) {
-            std::int32_t prev = 0;
-            std::uint64_t rowSize = 0;
-            in.read(reinterpret_cast<char*>(&prev), sizeof(prev));
-            in.read(reinterpret_cast<char*>(&rowSize), sizeof(rowSize));
-            auto& row = transitions[static_cast<int>(prev)];
-            for (std::uint64_t j = 0; j < rowSize; ++j) {
-                std::int32_t next = 0;
-                std::uint32_t count = 0;
-                in.read(reinterpret_cast<char*>(&next), sizeof(next));
-                in.read(reinterpret_cast<char*>(&count), sizeof(count));
-                row[static_cast<int>(next)] = count;
+            vocabSize = static_cast<std::size_t>(savedVocabSize);
+            observedPairs = static_cast<std::size_t>(savedObservedPairs);
+            observedTriples = static_cast<std::size_t>(savedObservedTriples);
+            observedQuadruples = static_cast<std::size_t>(savedObservedQuadruples);
+
+            for (std::size_t i = 0; i <= kMaxContextLen; ++i) {
+                std::uint64_t c = 0;
+                in.read(reinterpret_cast<char*>(&c), sizeof(c));
+                contextCounts[i] = static_cast<std::size_t>(c);
             }
-        }
 
-        for (std::uint64_t i = 0; i < pairTransitionSize; ++i) {
-            std::int32_t first = 0;
-            std::int32_t second = 0;
-            std::uint64_t rowSize = 0;
-            in.read(reinterpret_cast<char*>(&first), sizeof(first));
-            in.read(reinterpret_cast<char*>(&second), sizeof(second));
-            in.read(reinterpret_cast<char*>(&rowSize), sizeof(rowSize));
-            auto& row = pairTransitions[TokenPairKey{static_cast<int>(first), static_cast<int>(second)}];
-            for (std::uint64_t j = 0; j < rowSize; ++j) {
-                std::int32_t next = 0;
+            for (std::uint64_t i = 0; i < unigramSize; ++i) {
+                std::int32_t id = 0;
                 std::uint32_t count = 0;
-                in.read(reinterpret_cast<char*>(&next), sizeof(next));
+                in.read(reinterpret_cast<char*>(&id), sizeof(id));
                 in.read(reinterpret_cast<char*>(&count), sizeof(count));
-                row[static_cast<int>(next)] = count;
+                unigramCounts[static_cast<int>(id)] = count;
             }
+
+            for (std::uint64_t i = 0; i < ngramCount; ++i) {
+                std::uint8_t len = 0;
+                in.read(reinterpret_cast<char*>(&len), sizeof(len));
+                ContextKey key;
+                key.len = len;
+                for (std::uint8_t j = 0; j < len; ++j) {
+                    std::int32_t tok = 0;
+                    in.read(reinterpret_cast<char*>(&tok), sizeof(tok));
+                    key.tokens[j] = static_cast<int>(tok);
+                }
+                std::uint64_t rowSize = 0;
+                in.read(reinterpret_cast<char*>(&rowSize), sizeof(rowSize));
+                auto& row = ngramTransitions[key];
+                for (std::uint64_t j = 0; j < rowSize; ++j) {
+                    std::int32_t next = 0;
+                    std::uint32_t count = 0;
+                    in.read(reinterpret_cast<char*>(&next), sizeof(next));
+                    in.read(reinterpret_cast<char*>(&count), sizeof(count));
+                    row[static_cast<int>(next)] = count;
+                }
+            }
+
+            return in.good();
+        } else if (isV3 || isV2) {
+            std::uint64_t savedVocabSize = 0;
+            std::uint64_t savedObservedPairs = 0;
+            std::uint64_t savedObservedTriples = 0;
+            std::uint64_t savedObservedQuadruples = 0;
+            std::uint64_t unigramSize = 0;
+            std::uint64_t transitionSize = 0;
+            std::uint64_t pairTransitionSize = 0;
+            std::uint64_t tripleTransitionSize = 0;
+
+            in.read(reinterpret_cast<char*>(&savedVocabSize), sizeof(savedVocabSize));
+            in.read(reinterpret_cast<char*>(&savedObservedPairs), sizeof(savedObservedPairs));
+            in.read(reinterpret_cast<char*>(&savedObservedTriples), sizeof(savedObservedTriples));
+            if (isV3) {
+                in.read(reinterpret_cast<char*>(&savedObservedQuadruples), sizeof(savedObservedQuadruples));
+            }
+            in.read(reinterpret_cast<char*>(&unigramSize), sizeof(unigramSize));
+            in.read(reinterpret_cast<char*>(&transitionSize), sizeof(transitionSize));
+            in.read(reinterpret_cast<char*>(&pairTransitionSize), sizeof(pairTransitionSize));
+            if (isV3) {
+                in.read(reinterpret_cast<char*>(&tripleTransitionSize), sizeof(tripleTransitionSize));
+            }
+
+            vocabSize = static_cast<std::size_t>(savedVocabSize);
+            observedPairs = static_cast<std::size_t>(savedObservedPairs);
+            observedTriples = static_cast<std::size_t>(savedObservedTriples);
+            observedQuadruples = static_cast<std::size_t>(savedObservedQuadruples);
+
+            for (std::uint64_t i = 0; i < unigramSize; ++i) {
+                std::int32_t id = 0;
+                std::uint32_t count = 0;
+                in.read(reinterpret_cast<char*>(&id), sizeof(id));
+                in.read(reinterpret_cast<char*>(&count), sizeof(count));
+                unigramCounts[static_cast<int>(id)] = count;
+            }
+
+            for (std::uint64_t i = 0; i < transitionSize; ++i) {
+                std::int32_t prev = 0;
+                std::uint64_t rowSize = 0;
+                in.read(reinterpret_cast<char*>(&prev), sizeof(prev));
+                in.read(reinterpret_cast<char*>(&rowSize), sizeof(rowSize));
+                ContextKey key;
+                key.len = 1;
+                key.tokens[0] = static_cast<int>(prev);
+                auto& row = ngramTransitions[key];
+                for (std::uint64_t j = 0; j < rowSize; ++j) {
+                    std::int32_t next = 0;
+                    std::uint32_t count = 0;
+                    in.read(reinterpret_cast<char*>(&next), sizeof(next));
+                    in.read(reinterpret_cast<char*>(&count), sizeof(count));
+                    row[static_cast<int>(next)] = count;
+                }
+            }
+
+            for (std::uint64_t i = 0; i < pairTransitionSize; ++i) {
+                std::int32_t first = 0;
+                std::int32_t second = 0;
+                std::uint64_t rowSize = 0;
+                in.read(reinterpret_cast<char*>(&first), sizeof(first));
+                in.read(reinterpret_cast<char*>(&second), sizeof(second));
+                in.read(reinterpret_cast<char*>(&rowSize), sizeof(rowSize));
+                ContextKey key;
+                key.len = 2;
+                key.tokens[0] = static_cast<int>(first);
+                key.tokens[1] = static_cast<int>(second);
+                auto& row = ngramTransitions[key];
+                for (std::uint64_t j = 0; j < rowSize; ++j) {
+                    std::int32_t next = 0;
+                    std::uint32_t count = 0;
+                    in.read(reinterpret_cast<char*>(&next), sizeof(next));
+                    in.read(reinterpret_cast<char*>(&count), sizeof(count));
+                    row[static_cast<int>(next)] = count;
+                }
+            }
+
+            if (isV3) {
+                for (std::uint64_t i = 0; i < tripleTransitionSize; ++i) {
+                    std::int32_t first = 0;
+                    std::int32_t second = 0;
+                    std::int32_t third = 0;
+                    std::uint64_t rowSize = 0;
+                    in.read(reinterpret_cast<char*>(&first), sizeof(first));
+                    in.read(reinterpret_cast<char*>(&second), sizeof(second));
+                    in.read(reinterpret_cast<char*>(&third), sizeof(third));
+                    in.read(reinterpret_cast<char*>(&rowSize), sizeof(rowSize));
+                    ContextKey key;
+                    key.len = 3;
+                    key.tokens[0] = static_cast<int>(first);
+                    key.tokens[1] = static_cast<int>(second);
+                    key.tokens[2] = static_cast<int>(third);
+                    auto& row = ngramTransitions[key];
+                    for (std::uint64_t j = 0; j < rowSize; ++j) {
+                        std::int32_t next = 0;
+                        std::uint32_t count = 0;
+                        in.read(reinterpret_cast<char*>(&next), sizeof(next));
+                        in.read(reinterpret_cast<char*>(&count), sizeof(count));
+                        row[static_cast<int>(next)] = count;
+                    }
+                }
+            }
+
+            return in.good();
         }
 
-        return in.good();
+        return false;
     }
 };
 
@@ -786,6 +1062,7 @@ TokenizerMode parseTokenizerMode() {
     std::cout << "Choose tokenizer mode [bpe/sentencepiece] (default=bpe): ";
     std::string mode;
     std::getline(std::cin, mode);
+    mode = trimAscii(mode);
     if (mode.empty()) {
         return TokenizerMode::kBpe;
     }
@@ -807,7 +1084,7 @@ std::string readInputTextFromTerminal() {
     std::cout << "Enter text to tokenize: ";
     std::string inputText;
     std::getline(std::cin, inputText);
-    return inputText;
+    return trimAscii(inputText);
 }
 
 std::vector<int> clampTokenIdsToModelVocab(const std::vector<int>& tokenIds, std::size_t vocabSize) {
@@ -847,7 +1124,7 @@ std::size_t readSizeFromTerminal(const std::string& prompt, std::size_t fallback
 
     try {
         const std::size_t parsed = static_cast<std::size_t>(std::stoull(value));
-        return parsed == 0 ? fallback : parsed;
+        return parsed;
     } catch (...) {
         std::cerr << "Invalid number. Using default: " << fallback << std::endl;
         return fallback;
@@ -868,6 +1145,7 @@ bool trainChatModelFromCorpus(
 
     chatModel.clear();
     chatModel.vocabSize = tokenizerVocabSize;
+    chatModel.setStopTokens(tokenizer);
 
     for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
         std::ifstream in(corpusPath.c_str());
@@ -906,6 +1184,7 @@ bool trainChatModelFromCorpus(
                   << " | tokens=" << tokensSeen
                   << " | pairs=" << chatModel.observedPairs
                   << " | triples=" << chatModel.observedTriples
+                  << " | quads=" << chatModel.observedQuadruples
                   << "                    " << std::endl;
     }
 
@@ -916,7 +1195,7 @@ void printChatModelSample(ChatNgramModel& chatModel, NKS_Tokenizer& tokenizer, c
     const std::vector<int> promptIds = tokenizer.encode(prompt);
     const std::vector<int> sampleIds = chatModel.generate(promptIds, kChatGenerationTokens);
     std::cout << "\nPrompt> " << prompt << std::endl;
-    std::cout << "Model> " << tokenizer.decode(sampleIds) << std::endl;
+    std::cout << "Model> " << formatModelResponse(tokenizer.decode(sampleIds)) << std::endl;
 }
 } // namespace
 
@@ -1316,7 +1595,7 @@ int runRealCorpusTrainingExample() {
     const std::vector<int> sampleIds = chatModel.generate(testPrompt, 24);
     std::cout << "  - Saved: " << paths.chatModelPath << std::endl;
     std::cout << "  - Sample prompt: how are you" << std::endl;
-    std::cout << "  - Sample output: " << tokenizer.decode(sampleIds) << std::endl;
+    std::cout << "  - Sample output: " << formatModelResponse(tokenizer.decode(sampleIds)) << std::endl;
 
     std::cout << "\n========================================" << std::endl;
     std::cout << "   Training Summary" << std::endl;
@@ -1324,8 +1603,8 @@ int runRealCorpusTrainingExample() {
     std::cout << "Trained for " << epochs << " epochs" << std::endl;
     std::cout << "Observed token pairs: " << chatModel.observedPairs << std::endl;
     std::cout << "Observed token triples: " << chatModel.observedTriples << std::endl;
-    std::cout << "Transition rows: " << chatModel.transitions.size() << std::endl;
-    std::cout << "Pair transition rows: " << chatModel.pairTransitions.size() << std::endl;
+    std::cout << "Observed token quadruples: " << chatModel.observedQuadruples << std::endl;
+    std::cout << "Transition rows: " << chatModel.ngramTransitions.size() << std::endl;
     std::cout << "Saved chat model: " << paths.chatModelPath << std::endl;
     std::cout << "========================================\n" << std::endl;
 
@@ -1388,6 +1667,7 @@ int runLLMChatExample() {
         std::cout << "  - Loaded real corpus chat model: " << paths.chatModelPath << std::endl;
         std::cout << "  - Chat token pairs: " << chatModel.observedPairs << std::endl;
         std::cout << "  - Chat token triples: " << chatModel.observedTriples << std::endl;
+        chatModel.setStopTokens(tokenizer);
     } else {
         std::cout << "  - No real corpus chat model found. Run option 4 to train one." << std::endl;
     }
@@ -1408,6 +1688,7 @@ int runLLMChatExample() {
             break;
         }
 
+        line = trimAscii(line);
         if (line.empty()) {
             continue;
         }
@@ -1421,7 +1702,7 @@ int runLLMChatExample() {
         if (hasRealChatModel) {
             try {
                 const std::vector<int> newTokenIds = chatModel.generate(promptIds, kChatGenerationTokens);
-                const std::string response = tokenizer.decode(newTokenIds);
+                const std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
                 if (response.empty()) {
                     std::cout << "Model> [empty decoded response]" << std::endl;
                 } else {
@@ -1451,7 +1732,7 @@ int runLLMChatExample() {
                                    generated.end());
             }
 
-            std::string response = tokenizer.decode(newTokenIds);
+            std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
             if (response.empty()) {
                 std::cout << "Model> [empty decoded response]" << std::endl;
             } else {
@@ -1494,8 +1775,9 @@ int runChatModelEvaluationExample() {
     std::cout << "Loaded: " << paths.chatModelPath << std::endl;
     std::cout << "Observed token pairs: " << chatModel.observedPairs << std::endl;
     std::cout << "Observed token triples: " << chatModel.observedTriples << std::endl;
-    std::cout << "Transition rows: " << chatModel.transitions.size() << std::endl;
-    std::cout << "Pair transition rows: " << chatModel.pairTransitions.size() << std::endl;
+    std::cout << "Observed token quadruples: " << chatModel.observedQuadruples << std::endl;
+    std::cout << "Transition rows: " << chatModel.ngramTransitions.size() << std::endl;
+    chatModel.setStopTokens(tokenizer);
 
     printChatModelSample(chatModel, tokenizer, "how are you");
     printChatModelSample(chatModel, tokenizer, "what is your name");
@@ -1510,6 +1792,7 @@ int runChatModelEvaluationExample() {
             std::cout << std::endl;
             break;
         }
+        prompt = trimAscii(prompt);
         if (prompt.empty()) {
             continue;
         }
