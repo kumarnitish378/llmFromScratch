@@ -11,7 +11,7 @@ if ($Mode -ne "status") {
  python -c "import yaml, crawl4ai, psutil" 2>$null
  if ($LASTEXITCODE -ne 0) {
   Write-Host "Installing requirements..."
-  python -m pip install -r requirements.txt
+  python -m pip install crawl4ai pyyaml psutil
   if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
   python -m playwright install chromium
   if ($LASTEXITCODE -ne 0) { throw "Playwright Chromium install failed" }
