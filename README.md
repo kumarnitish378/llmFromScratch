@@ -66,6 +66,6 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\run_overnight.ps1 -Mode status
 ```
 
-The pipeline mode crawls then cleans/deduplicates. **It does not train the Transformer.** The current C++ corpus chat model is an n-gram continuation baseline; a real neural training integration and Transformer gradient/attention fixes remain separate work. The chat path no longer silently falls back to randomly initialized Transformer weights when n-gram generation is too short, and it abstains on responses with no meaningful prompt-word overlap. This lexical guard is only a safety heuristic, not semantic understanding.
+The pipeline mode crawls, cleans/deduplicates, then invokes the existing corpus n-gram chat trainer for one epoch. **It does not train the Transformer.** The current C++ corpus chat model is an n-gram continuation baseline; a real neural training integration and Transformer gradient/attention fixes remain separate work. The chat path no longer silently falls back to randomly initialized Transformer weights when n-gram generation is too short, and it abstains on responses with no meaningful prompt-word overlap. This lexical guard is only a safety heuristic, not semantic understanding.
 
-Use `-Mode crawl` to resume an interrupted collection, `-Mode process` to rebuild cleaned output from saved raw JSONL, and `-Mode status` to inspect the persistent queue. Start small before leaving a long job overnight.
+Use `-Mode crawl` to resume an interrupted collection, `-Mode process` to rebuild cleaned output from saved raw JSONL, `-Mode train` to train the existing n-gram chat baseline from Data/clean_training_corpus.txt, and `-Mode status` to inspect the persistent queue. Start small before leaving a long job overnight.
