@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
- [Parameter(Mandatory=$true)][ValidateSet("smoke-test","crawl","process","pipeline","status")][string]$Mode,
+ [Parameter(Mandatory=$true)][ValidateSet("smoke-test","crawl","process","train","pipeline","status")][string]$Mode,
  [double]$MaxHours=8,[int]$MaxPages=1000,[double]$MaxDiskGB=20,[double]$MaxRamGB=6,
  [string]$SeedFile,[switch]$Resume,[switch]$DryRun
 )
