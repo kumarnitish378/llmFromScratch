@@ -33,5 +33,5 @@ def main():
             record={k:row.get(k) for k in ("url","title","crawled_at","license_status","source_domain","depth")}; record["text"]=text
             dst.write(json.dumps(record,ensure_ascii=False)+"\n"); kept+=1
             if kept%100==0: db.commit(); print(f"kept={kept} duplicates={dupes} short={short}")
-    db.commit(); db.close(); print(f"Done: kept={kept}, duplicates={dupes}, too_short={short}, output={out}")
+    db.commit(); db.close(); print(f"Done: kept={kept}, duplicates={dupes}, too_short={short}, output={out}")\n    print(f"Plain-text training corpus: {corpus_path}")
 if __name__=="__main__": main()
