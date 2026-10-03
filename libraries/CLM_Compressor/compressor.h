@@ -54,6 +54,9 @@
 // MinGW < 9 ships a broken std::thread on Windows.
 // We detect Win32 and use native _beginthreadex instead.
 #if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  include <windows.h>
 #  include <process.h>
    namespace clm { namespace detail {

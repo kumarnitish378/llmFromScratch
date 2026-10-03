@@ -5,6 +5,7 @@ CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -pedantic
 CPPFLAGS := -I.
 LDFLAGS  :=
 LDLIBS   :=
+DEP_FLAGS := -MMD -MP
 
 BUILD_DIR := build
 TARGET    := $(BUILD_DIR)/app.exe
@@ -15,12 +16,26 @@ SOURCES := $(wildcard *.cpp) \
            $(wildcard libraries/NKS_LLM/*.cpp)
 SOURCES := $(filter-out libraries/CLM_Compressor/main.cpp,$(SOURCES))
 
+ifeq ($(OS),Windows_NT)
+CPPFLAGS += -DNOMINMAX
+MSVC_HOST_DIR ?= C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64
+NVCC_CCBIN ?= -ccbin "$(MSVC_HOST_DIR)"
+endif
+
 ifeq ($(USE_CUDA),1)
-LINK := $(NVCC)
 CPPFLAGS += -DNKS_ENABLE_CUDA
 SOURCES := $(filter-out libraries/NKS_LLM/gpu_backend.cpp,$(SOURCES))
 CUDA_SOURCES := $(wildcard libraries/NKS_LLM/*.cu)
 CUDA_OBJECTS := $(patsubst %.cu,$(BUILD_DIR)/%.cu.o,$(CUDA_SOURCES))
+
+# NVCC handles C++17 compilation and 64-bit object generation matching CUDA
+CXX := $(NVCC) $(NVCC_CCBIN)
+LINK := $(NVCC) $(NVCC_CCBIN)
+CXXFLAGS := -std=c++17 -O3
+DEP_FLAGS := -MD
+NVCC_FLAGS := -std=c++17 -O3 $(NVCC_CCBIN)
+else
+NVCC_FLAGS := -std=c++17 -O3 $(NVCC_CCBIN)
 endif
 
 OBJECTS := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SOURCES))
@@ -55,11 +70,11 @@ $(TARGET): $(OBJECTS) $(CUDA_OBJECTS)
 
 $(BUILD_DIR)/%.o: %.cpp
 	@$(call MKDIR_P,$(dir $@))
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(THREAD_FLAGS) -MMD -MP -c $< -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(THREAD_FLAGS) $(DEP_FLAGS) -c $< -o $@
 
 $(BUILD_DIR)/%.cu.o: %.cu
 	@$(call MKDIR_P,$(dir $@))
-	$(NVCC) $(CPPFLAGS) -std=c++17 -O3 -MMD -MP -c $< -o $@
+	$(NVCC) $(CPPFLAGS) $(NVCC_FLAGS) -MD -c $< -o $@
 
 run: $(TARGET)
 	$(RUN_EXE)
