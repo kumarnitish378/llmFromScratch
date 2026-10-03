@@ -2089,25 +2089,10 @@ int runLLMChatExample() {
             }
         }
 
-        if (newTokenIds.size() < 3) {
-            std::vector<int> modelPromptIds = clampTokenIdsToModelVocab(promptIds, config.vocab_size);
-            if (modelPromptIds.size() > config.max_seq_length) {
-                modelPromptIds.erase(
-                    modelPromptIds.begin(),
-                    modelPromptIds.end() - static_cast<std::ptrdiff_t>(config.max_seq_length));
-            }
+        // Do not silently fall back to randomly initialized Transformer weights.
+        // The n-gram model is only a local continuation baseline, not semantic QA.
+        // If it cannot produce a usable continuation, abstain rather than inventing unrelated text.
 
-            try {
-                const std::size_t maxNewTokens = 32;
-                std::vector<int> generated = model.generate(modelPromptIds, maxNewTokens);
-                if (generated.size() > modelPromptIds.size()) {
-                    newTokenIds.assign(generated.begin() + static_cast<std::ptrdiff_t>(modelPromptIds.size()),
-                                       generated.end());
-                }
-            } catch (const std::exception& ex) {
-                std::cerr << "Model error: " << ex.what() << "\n" << std::endl;
-            }
-        }
 
         std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
         if (response.empty()) {
