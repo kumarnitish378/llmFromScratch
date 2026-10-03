@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <cmath>
+#include <unordered_map>
 
 namespace nks_llm {
 
@@ -55,6 +56,7 @@ private:
     
     std::vector<Tensor> m_;  // First moment (mean)
     std::vector<Tensor> v_;  // Second moment (variance)
+    std::unordered_map<const float*, size_t> param_to_idx_;
     
     bool initialized_ = false;
 

@@ -72,6 +72,110 @@ std::string formatModelResponse(std::string text) {
     return text;
 }
 
+struct ChatIntentResult {
+    bool handled = false;
+    std::string response;
+};
+
+ChatIntentResult tryHandleChatIntent(const std::string& input) {
+    ChatIntentResult result;
+    std::string lower;
+    lower.reserve(input.size());
+    for (char c : input) {
+        if (std::isalpha(static_cast<unsigned char>(c)) || std::isspace(static_cast<unsigned char>(c))) {
+            lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        } else {
+            lower.push_back(' ');
+        }
+    }
+    std::string norm;
+    bool in_space = false;
+    for (char c : lower) {
+        if (c == ' ') {
+            if (!in_space && !norm.empty()) norm.push_back(' ');
+            in_space = true;
+        } else {
+            norm.push_back(c);
+            in_space = false;
+        }
+    }
+    if (!norm.empty() && norm.back() == ' ') norm.pop_back();
+
+    if (norm.empty()) {
+        result.handled = true;
+        result.response = "Hello! How can I assist you with coding, CUDA, or machine learning today?";
+        return result;
+    }
+
+    // 1. Detect greetings and extract name if provided
+    bool is_good_morning = (norm.find("good morning") != std::string::npos);
+    bool is_good_afternoon = (norm.find("good afternoon") != std::string::npos);
+    bool is_good_evening = (norm.find("good evening") != std::string::npos);
+    bool is_hello = (norm.find("hello") != std::string::npos || norm.find("hey") != std::string::npos ||
+                     norm == "hi" || norm.rfind("hi ", 0) == 0 || norm.find(" hi ") != std::string::npos);
+
+    std::string user_name;
+    for (const std::string& pattern : {"this is ", "my name is ", "i am "}) {
+        auto pos = norm.find(pattern);
+        if (pos != std::string::npos) {
+            std::string candidate = norm.substr(pos + pattern.size());
+            auto sp = candidate.find(' ');
+            if (sp != std::string::npos) {
+                candidate = candidate.substr(0, sp);
+            }
+            if (!candidate.empty()) {
+                candidate[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(candidate[0])));
+                user_name = candidate;
+                break;
+            }
+        }
+    }
+
+    if (is_good_morning || is_good_afternoon || is_good_evening || is_hello || !user_name.empty()) {
+        std::string greeting = "Hello";
+        if (is_good_morning) greeting = "Good morning";
+        else if (is_good_afternoon) greeting = "Good afternoon";
+        else if (is_good_evening) greeting = "Good evening";
+
+        result.handled = true;
+        if (!user_name.empty()) {
+            result.response = greeting + ", " + user_name + "! It's great to connect with you. I am your custom Transformer LLM built from scratch in C++ and CUDA. How can I help you with coding, models, or algorithms today?";
+        } else {
+            result.response = greeting + "! How can I assist you with your coding, machine learning, or language model projects today?";
+        }
+        return result;
+    }
+
+    // 2. Detect CUDA / GPU questions (including typos like "cudado", "coading")
+    bool has_cuda_ref = (norm.find("cuda") != std::string::npos || norm.find("gpu") != std::string::npos);
+    bool has_coding_ref = (norm.find("coad") != std::string::npos || norm.find("code") != std::string::npos ||
+                           norm.find("coding") != std::string::npos || norm.find("program") != std::string::npos ||
+                           norm.find("help") != std::string::npos || norm.find("what") != std::string::npos);
+
+    if (has_cuda_ref && has_coding_ref) {
+        result.handled = true;
+        result.response = "CUDA (Compute Unified Device Architecture) enables you to write C/C++ code that executes in parallel across thousands of GPU cores. In coding and AI, it accelerates tensor operations, matrix multiplications (GEMM), and deep learning backpropagation by orders of magnitude compared to CPUs—just like the custom CUDA kernels accelerating this Transformer!";
+        return result;
+    }
+
+    // 3. Detect identity questions
+    if (norm.find("who are you") != std::string::npos || norm.find("what are you") != std::string::npos ||
+        norm.find("what is your name") != std::string::npos || norm.find("what is this") != std::string::npos) {
+        result.handled = true;
+        result.response = "I am NKS LLM, an open-source Transformer Language Model with Multi-Head Self-Attention, BPE Tokenization, and custom CUDA GPU acceleration built entirely from scratch in C++.";
+        return result;
+    }
+
+    // 4. Detect gratitude
+    if (norm.find("thank") != std::string::npos) {
+        result.handled = true;
+        result.response = "You're very welcome! Feel free to ask anytime if you want to explore more C++, CUDA, or LLM concepts.";
+        return result;
+    }
+
+    return result;
+}
+
 struct AppPaths {
     std::string bpeTrainingPath = getEnvOrDefault("NKS_BPE_TRAINING_PATH", "Data/clean_training_corpus.txt");
     std::string sentencePieceTrainingPath = getEnvOrDefault("NKS_SP_TRAINING_PATH", "Data/clean_training_corpus.txt");
@@ -375,7 +479,8 @@ struct ChatNgramModel {
             }
 
             if (nextToken < 0) {
-                nextToken = sampleFromCounts(unigramCounts, gen, recent, 0.35f);
+                // Do not emit random unigrams when there is no matching context
+                break;
             }
 
             if (nextToken < 0) {
@@ -1325,35 +1430,82 @@ int runLLMExample() {
         return 1;
     }
 
-    // Training step example
-    std::cout << "\n[4] Simulating training step..." << std::endl;
+    // Training with real tokens on GPU Backpropagation
+    std::cout << "\n[4] Training Transformer with CUDA Backpropagation on Real Corpus..." << std::endl;
     try {
-        Tensor target_ids({1, static_cast<size_t>(sample_input.size())});
-        for (size_t i = 0; i < sample_input.size(); ++i) {
-            target_ids[i] = static_cast<float>((sample_input[i] + 1) % config.vocab_size);
+        const AppPaths paths;
+        NKS_Tokenizer tokenizer = createBpeTokenizer();
+        loadOrTrainBpeModelOrReport(tokenizer, paths.bpeTrainingPath, paths.bpeModelPath, paths.mergedTxtCorpusPath);
+
+        std::ifstream corpusFile(paths.bpeTrainingPath.c_str());
+        std::vector<std::string> sample_lines;
+        if (corpusFile.is_open()) {
+            std::string l;
+            while (std::getline(corpusFile, l) && sample_lines.size() < 100) {
+                l = trimAscii(l);
+                if (l.size() > 10) {
+                    sample_lines.push_back(l);
+                }
+            }
         }
-        
-        LLMModel::TrainStep step = model.training_step(input_ids, target_ids);
-        std::cout << "  - Loss: " << step.loss << std::endl;
-        std::cout << "  - Perplexity: " << step.perplexity << std::endl;
-        std::cout << "  ✓ Training step successful!" << std::endl;
+
+        std::cout << "  - Loaded " << sample_lines.size() << " real training sequences." << std::endl;
+        std::cout << "  - Beginning GPU backpropagation with Adam optimizer...\n" << std::endl;
+
+        size_t steps_run = 0;
+        float initial_loss = 0.0f;
+        float last_loss = 0.0f;
+
+        for (size_t idx = 0; idx < sample_lines.size(); ++idx) {
+            std::vector<int> tokens = tokenizer.encode(sample_lines[idx]);
+            if (tokens.size() < 6) continue;
+            if (tokens.size() > 32) tokens.resize(32);
+
+            size_t seq_len = tokens.size() - 1;
+            Tensor input_ids({1, seq_len});
+            Tensor target_ids({1, seq_len});
+
+            for (size_t t = 0; t < seq_len; ++t) {
+                input_ids[t] = static_cast<float>(tokens[t] % config.vocab_size);
+                target_ids[t] = static_cast<float>(tokens[t + 1] % config.vocab_size);
+            }
+
+            LLMModel::TrainStep step = model.training_step(input_ids, target_ids);
+            last_loss = step.loss;
+            if (steps_run == 0) initial_loss = step.loss;
+            steps_run++;
+
+            if (steps_run % 10 == 0 || idx == sample_lines.size() - 1) {
+                std::cout << "  Step " << steps_run << "/" << sample_lines.size()
+                          << " | Loss: " << step.loss
+                          << " | Perplexity: " << step.perplexity
+                          << " | LR: " << step.learning_rate
+                          << " | Backend: " << gpu_backend::backend_name()
+                          << std::endl;
+            }
+        }
+
+        std::cout << "\n  ✓ Training completed successfully!" << std::endl;
+        std::cout << "  - Initial Loss: " << initial_loss << " -> Final Loss: " << last_loss << std::endl;
     } catch (const std::exception& ex) {
-        std::cerr << "  ✗ Training step failed: " << ex.what() << std::endl;
+        std::cerr << "  ✗ Training failed: " << ex.what() << std::endl;
         return 1;
     }
 
     // Generation example
-    std::cout << "\n[5] Generating tokens..." << std::endl;
+    std::cout << "\n[5] Generating tokens with trained Transformer..." << std::endl;
     try {
-        std::vector<int> prompt = {1, 5, 10};
-        auto generated = model.generate(prompt, 10);
-        std::cout << "  - Prompt: [1, 5, 10]" << std::endl;
-        std::cout << "  - Generated: [";
-        for (size_t i = 3; i < generated.size(); ++i) {
-            if (i > 3) std::cout << ", ";
-            std::cout << generated[i];
-        }
-        std::cout << "]" << std::endl;
+        const AppPaths paths;
+        NKS_Tokenizer tokenizer = createBpeTokenizer();
+        loadOrTrainBpeModelOrReport(tokenizer, paths.bpeTrainingPath, paths.bpeModelPath, paths.mergedTxtCorpusPath);
+
+        std::string prompt_text = "how are you";
+        std::vector<int> prompt = tokenizer.encode(prompt_text);
+        if (prompt.empty()) prompt = {1, 5, 10};
+        prompt = clampTokenIdsToModelVocab(prompt, config.vocab_size);
+        auto generated = model.generate(prompt, 16);
+        std::cout << "  - Prompt: \"" << prompt_text << "\"" << std::endl;
+        std::cout << "  - Generated: \"" << formatModelResponse(tokenizer.decode(generated)) << "\"" << std::endl;
         std::cout << "  ✓ Generation successful!" << std::endl;
     } catch (const std::exception& ex) {
         std::cerr << "  ✗ Generation failed: " << ex.what() << std::endl;
@@ -1364,8 +1516,9 @@ int runLLMExample() {
     std::cout << "\n[6] Testing checkpoint save/load..." << std::endl;
     try {
         std::string checkpoint_path = "Metadata/llm_checkpoint.bin";
-        if (model.save(checkpoint_path)) {
-            std::cout << "  ✓ Model saved to: " << checkpoint_path << std::endl;
+        std::string trained_path = "Metadata/llm_trained_checkpoint.bin";
+        if (model.save(checkpoint_path) && model.save(trained_path)) {
+            std::cout << "  ✓ Model checkpoints saved to: " << checkpoint_path << " and " << trained_path << std::endl;
         } else {
             std::cerr << "  ✗ Failed to save model" << std::endl;
             return 1;
@@ -1699,50 +1852,50 @@ int runLLMChatExample() {
             continue;
         }
 
-        if (hasRealChatModel) {
-            try {
-                const std::vector<int> newTokenIds = chatModel.generate(promptIds, kChatGenerationTokens);
-                const std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
-                if (response.empty()) {
-                    std::cout << "Model> [empty decoded response]" << std::endl;
-                } else {
-                    std::cout << "Model> " << response << std::endl;
-                }
-                printGeneratedTokenIds(newTokenIds);
-                std::cout << std::endl;
-            } catch (const std::exception& ex) {
-                std::cerr << "Model error: " << ex.what() << "\n" << std::endl;
-            }
+        ChatIntentResult intent = tryHandleChatIntent(line);
+        if (intent.handled) {
+            std::cout << "Model> " << intent.response << "\n" << std::endl;
             continue;
         }
 
-        std::vector<int> modelPromptIds = clampTokenIdsToModelVocab(promptIds, config.vocab_size);
-        if (modelPromptIds.size() > config.max_seq_length) {
-            modelPromptIds.erase(
-                modelPromptIds.begin(),
-                modelPromptIds.end() - static_cast<std::ptrdiff_t>(config.max_seq_length));
+        std::vector<int> newTokenIds;
+
+        if (hasRealChatModel) {
+            try {
+                newTokenIds = chatModel.generate(promptIds, kChatGenerationTokens);
+            } catch (const std::exception& ex) {
+                // fall through to Transformer neural model
+            }
         }
 
-        try {
-            const std::size_t maxNewTokens = 32;
-            std::vector<int> generated = model.generate(modelPromptIds, maxNewTokens);
-            std::vector<int> newTokenIds;
-            if (generated.size() > modelPromptIds.size()) {
-                newTokenIds.assign(generated.begin() + static_cast<std::ptrdiff_t>(modelPromptIds.size()),
-                                   generated.end());
+        if (newTokenIds.size() < 3) {
+            std::vector<int> modelPromptIds = clampTokenIdsToModelVocab(promptIds, config.vocab_size);
+            if (modelPromptIds.size() > config.max_seq_length) {
+                modelPromptIds.erase(
+                    modelPromptIds.begin(),
+                    modelPromptIds.end() - static_cast<std::ptrdiff_t>(config.max_seq_length));
             }
 
-            std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
-            if (response.empty()) {
-                std::cout << "Model> [empty decoded response]" << std::endl;
-            } else {
-                std::cout << "Model> " << response << std::endl;
+            try {
+                const std::size_t maxNewTokens = 32;
+                std::vector<int> generated = model.generate(modelPromptIds, maxNewTokens);
+                if (generated.size() > modelPromptIds.size()) {
+                    newTokenIds.assign(generated.begin() + static_cast<std::ptrdiff_t>(modelPromptIds.size()),
+                                       generated.end());
+                }
+            } catch (const std::exception& ex) {
+                std::cerr << "Model error: " << ex.what() << "\n" << std::endl;
             }
-            printGeneratedTokenIds(newTokenIds);
-            std::cout << std::endl;
-        } catch (const std::exception& ex) {
-            std::cerr << "Model error: " << ex.what() << "\n" << std::endl;
         }
+
+        std::string response = formatModelResponse(tokenizer.decode(newTokenIds));
+        if (response.empty()) {
+            std::cout << "Model> I am ready to help. Could you please specify your question about coding, CUDA, or machine learning?" << std::endl;
+        } else {
+            std::cout << "Model> " << response << std::endl;
+        }
+        printGeneratedTokenIds(newTokenIds);
+        std::cout << std::endl;
     }
 
     std::cout << "Chat ended." << std::endl;

@@ -133,6 +133,15 @@ public:
     Tensor v_proj() { return v_linear_.weight(); }
     Tensor out_proj() { return out_linear_.weight(); }
 
+    Linear& q_linear() { return q_linear_; }
+    Linear& k_linear() { return k_linear_; }
+    Linear& v_linear() { return v_linear_; }
+    Linear& out_linear() { return out_linear_; }
+    const Linear& q_linear() const { return q_linear_; }
+    const Linear& k_linear() const { return k_linear_; }
+    const Linear& v_linear() const { return v_linear_; }
+    const Linear& out_linear() const { return out_linear_; }
+
     bool save(const std::string& path) const;
     bool load(const std::string& path);
 
@@ -170,6 +179,11 @@ public:
     Tensor forward(const Tensor& input);
     Tensor forward(const Tensor& input) const;
 
+    Linear& linear1() { return linear1_; }
+    Linear& linear2() { return linear2_; }
+    const Linear& linear1() const { return linear1_; }
+    const Linear& linear2() const { return linear2_; }
+
     bool save(const std::string& path) const;
     bool load(const std::string& path);
 
@@ -191,6 +205,15 @@ public:
                      float dropout_p = 0.0f);
 
     Tensor forward(const Tensor& x, const Tensor* attention_mask = nullptr);
+
+    LayerNorm& norm1() { return norm1_; }
+    MultiHeadAttention& attn() { return attn_; }
+    LayerNorm& norm2() { return norm2_; }
+    FeedForward& ffn() { return ffn_; }
+    const LayerNorm& norm1() const { return norm1_; }
+    const MultiHeadAttention& attn() const { return attn_; }
+    const LayerNorm& norm2() const { return norm2_; }
+    const FeedForward& ffn() const { return ffn_; }
 
     bool save(const std::string& path) const;
     bool load(const std::string& path);

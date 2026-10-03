@@ -37,6 +37,7 @@ void Adam::ensure_initialized(size_t num_params) {
 void Adam::reset() {
     m_.clear();
     v_.clear();
+    param_to_idx_.clear();
     step_ = 0;
     initialized_ = false;
 }
@@ -46,20 +47,25 @@ void Adam::update(Tensor& param, const Tensor& param_grad) {
     
     step_++;
     
-    // Ensure m and v are initialized
-    if (m_.empty() || m_[0].shape() != param.shape()) {
-        m_.clear();
-        v_.clear();
+    // Ensure m and v are initialized for this specific parameter
+    const float* key = param.data();
+    auto it = param_to_idx_.find(key);
+    size_t idx = 0;
+    if (it == param_to_idx_.end()) {
+        idx = m_.size();
+        param_to_idx_[key] = idx;
         m_.push_back(Tensor(param.shape(), true));
         v_.push_back(Tensor(param.shape(), true));
-        m_[0].zeros_();
-        v_[0].zeros_();
+        m_.back().zeros_();
+        v_.back().zeros_();
+    } else {
+        idx = it->second;
     }
     
     float* param_ptr = param.data();
     const float* grad_ptr = param_grad.data();
-    float* m_ptr = m_[0].data();
-    float* v_ptr = v_[0].data();
+    float* m_ptr = m_[idx].data();
+    float* v_ptr = v_[idx].data();
     
     size_t size = param.elem_count();
     

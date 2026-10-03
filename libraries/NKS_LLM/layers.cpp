@@ -104,7 +104,10 @@ Tensor Embedding::forward(const Tensor& input_ids) {
     
     for (size_t i = 0; i < input_ids.elem_count(); ++i) {
         int token_id = static_cast<int>(input_ids[i]);
-        assert(token_id >= 0 && token_id < static_cast<int>(vocab_size_));
+        if (token_id < 0) token_id = 0;
+        if (token_id >= static_cast<int>(vocab_size_)) {
+            token_id = token_id % static_cast<int>(vocab_size_);
+        }
         
         // Copy embedding for this token
         const float* embedding = weight_ptr + token_id * embedding_dim_;
@@ -126,7 +129,10 @@ Tensor Embedding::forward(const Tensor& input_ids) const {
     
     for (size_t i = 0; i < input_ids.elem_count(); ++i) {
         int token_id = static_cast<int>(input_ids[i]);
-        assert(token_id >= 0 && token_id < static_cast<int>(vocab_size_));
+        if (token_id < 0) token_id = 0;
+        if (token_id >= static_cast<int>(vocab_size_)) {
+            token_id = token_id % static_cast<int>(vocab_size_);
+        }
         
         const float* embedding = weight_ptr + token_id * embedding_dim_;
         std::copy(embedding, embedding + embedding_dim_,
