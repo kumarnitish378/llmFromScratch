@@ -52,10 +52,11 @@ int main() {
     std::cout << "  1. Tokenizer Demo" << std::endl;
     std::cout << "  2. Compression Demo" << std::endl;
     std::cout << "  3. LLM Model Demo" << std::endl;
-    std::cout << "  4. Train Chat Model on Real Data" << std::endl;
+    std::cout << "  4. Train Chat Model on Real Data (n-gram)" << std::endl;
     std::cout << "  5. LLM Chat" << std::endl;
     std::cout << "  6. Evaluate Chat Model" << std::endl;
-    std::cout << "\nEnter choice [1-6] (default=3): ";
+    std::cout << "  7. Train Transformer on Real Corpus (C++/CUDA)" << std::endl;
+    std::cout << "\nEnter choice [1-7] (default=3): ";
 
     std::string choice;
     std::getline(std::cin, choice);
@@ -66,20 +67,22 @@ int main() {
     }
 
     int result = 1;
-    if (choice.find('1') != std::string::npos) {
+    if (choice == "1") {
         result = runTokenizerApplication();
-    } else if (choice.find('2') != std::string::npos) {
+    } else if (choice == "2") {
         result = runCompressionExample();
-    } else if (choice.find('3') != std::string::npos) {
+    } else if (choice == "3") {
         result = runLLMExample();
-    } else if (choice.find('4') != std::string::npos) {
+    } else if (choice == "4") {
         result = runRealCorpusTrainingExample();
-    } else if (choice.find('5') != std::string::npos) {
+    } else if (choice == "5") {
         result = runLLMChatExample();
-    } else if (choice.find('6') != std::string::npos) {
+    } else if (choice == "6") {
         result = runChatModelEvaluationExample();
+    } else if (choice == "7") {
+        result = runTransformerCorpusTrainingExample();
     } else {
-        std::cerr << "Invalid choice." << std::endl;
+        std::cerr << "Invalid choice. Enter a number from 1 to 7." << std::endl;
     }
 
     return result;

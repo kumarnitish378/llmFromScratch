@@ -6,6 +6,7 @@ int runCompressionExample();
 int runLLMExample();
 int runLLMTrainingExample();
 int runRealCorpusTrainingExample();
+int runTransformerCorpusTrainingExample();
 int runLLMChatExample();
 int runChatModelEvaluationExample();
 
